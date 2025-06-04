@@ -22,11 +22,11 @@
 # IO / Peripheral mapping
 
 ## Single Pin elements
-IR emitter and Red LED - GPIO19
-Button A - GPIO37
-Button B - GPIO39
-Button C - GPIO35
-Buzzer   - GPIO2
+- IR emitter and Red LED - GPIO19
+- Button A - GPIO37
+- Button B - GPIO39
+- Button C - GPIO35
+- Buzzer   - GPIO2
 
 ## Color TFT Screen
 - ST7789V2

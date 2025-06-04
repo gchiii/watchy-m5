@@ -10,7 +10,7 @@ use esp_hal::clock::CpuClock;
 use esp_hal::time::Rate;
 use esp_hal::timer::timg::TimerGroup;
 use esp_hal::gpio::{Event, Input, InputConfig, Io, Level, Output, OutputConfig};
-use esp_hal::handler;
+use esp_hal::{handler, ram};
 use esp_hal::spi::{master::{Config, Spi}, Mode};
 use mipidsi::interface::SpiInterface;
 use mipidsi::models::ST7789;
@@ -30,7 +30,9 @@ use embedded_graphics::{
 
 extern crate alloc;
 
-static BUTTON: Mutex<RefCell<Option<Input>>> = Mutex::new(RefCell::new(None));
+static BUTTON_A: Mutex<RefCell<Option<Input>>> = Mutex::new(RefCell::new(None));
+static BUTTON_B: Mutex<RefCell<Option<Input>>> = Mutex::new(RefCell::new(None));
+static BUTTON_C: Mutex<RefCell<Option<Input>>> = Mutex::new(RefCell::new(None));
 
 #[embassy_executor::task]
 async fn run() {
@@ -57,7 +59,7 @@ async fn main(spawner: Spawner) {
 
     info!("Embassy initialized!");
 
-    let timer1 = TimerGroup::new(peripherals.TIMG0);
+    // let timer1 = TimerGroup::new(peripherals.TIMG0);
     // let _init = esp_wifi::init(
     //     timer1.timer0,
     //     esp_hal::rng::Rng::new(peripherals.RNG),
@@ -73,12 +75,20 @@ async fn main(spawner: Spawner) {
     let mut led = Output::new(peripherals.GPIO19, Level::Low, OutputConfig::default());
 
     // Set GPIO37 as an input
-    let mut button = Input::new(peripherals.GPIO37, InputConfig::default());
+    let mut button_a = Input::new(peripherals.GPIO37, InputConfig::default());
+    // Set GPIO39 as an input
+    let mut button_b = Input::new(peripherals.GPIO39, InputConfig::default());
+    // Set GPIO35 as an input
+    let mut button_c = Input::new(peripherals.GPIO35, InputConfig::default());
 
-        // ANCHOR: critical_section
+    // ANCHOR: critical_section
     critical_section::with(|cs| {
-        button.listen(Event::FallingEdge);
-        BUTTON.borrow_ref_mut(cs).replace(button)
+        button_a.listen(Event::FallingEdge);
+        BUTTON_A.borrow_ref_mut(cs).replace(button_a);
+        button_b.listen(Event::FallingEdge);
+        BUTTON_B.borrow_ref_mut(cs).replace(button_b);
+        button_c.listen(Event::FallingEdge);
+        BUTTON_C.borrow_ref_mut(cs).replace(button_c);
     });
     // ANCHOR_END: critical_section
 
@@ -165,13 +175,27 @@ async fn main(spawner: Spawner) {
 }
 
 #[handler]
+#[ram]
 fn handler() {
     critical_section::with(|cs| {
         info!("GPIO interrupt");
-        BUTTON
-            .borrow_ref_mut(cs)
-            .as_mut()
-            .unwrap()
-            .clear_interrupt();
+        if let Some(button_a) = BUTTON_A.borrow_ref_mut(cs).as_mut() {
+            if button_a.is_interrupt_set() {
+                button_a.clear_interrupt();
+                info!("Button A");
+            }
+        }
+        if let Some(button_b) = BUTTON_B.borrow_ref_mut(cs).as_mut() {
+            if button_b.is_interrupt_set() {
+                button_b.clear_interrupt();
+                info!("Button B");
+            }
+        }
+        if let Some(button_c) = BUTTON_C.borrow_ref_mut(cs).as_mut() {
+            if button_c.is_interrupt_set() {
+                button_c.clear_interrupt();
+                info!("Button C");
+            }
+        }
     });
 }

@@ -6,10 +6,26 @@ use embassy_executor::Spawner;
 use embassy_time::{Duration, Instant, Timer};
 use embedded_graphics::primitives::{PrimitiveStyleBuilder, Rectangle};
 use embedded_hal_bus::spi::ExclusiveDevice;
+use embedded_hal_bus::i2c::RefCellDevice;
+
 use esp_hal::{
-    clock::CpuClock, gpio::{interconnect::OutputSignal, Event, Input, InputConfig, Io, Level, Output, OutputConfig}, handler, ledc::{channel::{self, ChannelIFace}, timer::TimerIFace, Ledc}, ram, spi::{master::{Config, Spi}, Mode}, time::Rate, timer::timg::TimerGroup
+    ram, 
+    handler, 
+    clock::CpuClock, 
+    time::Rate, 
+    timer::timg::TimerGroup,
+    gpio::{interconnect::OutputSignal, Event, Input, InputConfig, Io, Level, Output, OutputConfig}, 
+    ledc::{
+        channel::{self, ChannelIFace}, 
+        timer::TimerIFace, 
+        Ledc
+    }, 
+    spi::{master::{Config, Spi}, Mode}, 
+    i2c::master::{BusTimeout, Config as I2cConfig, I2c},
 };
 use esp_hal::gpio::interconnect::PeripheralOutput;
+use mpu6886::Mpu6886;
+use pcf8563::Pcf8563;
 use watchy_m5::{
     music::{self, Song},
     pink_panther,
@@ -36,6 +52,12 @@ use embedded_graphics::{
 };
 
 extern crate alloc;
+
+/// Constants used on this stick
+const AXP192_ADDR: u8 = 0x34;
+const DISPLAY_WIDTH: u16 = 135;
+const DISPLAY_HEIGHT: u16 = 240;
+
 
 static BUTTON_A: Mutex<RefCell<Option<Input>>> = Mutex::new(RefCell::new(None));
 static BUTTON_B: Mutex<RefCell<Option<Input>>> = Mutex::new(RefCell::new(None));
@@ -87,9 +109,6 @@ async fn sing(ledc: Ledc<'static>, mut buzzer: esp_hal::peripherals::GPIO2<'stat
     }
 }
 
-const DISPLAY_WIDTH: u16 = 135;
-const DISPLAY_HEIGHT: u16 = 240;
-
 
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) {
@@ -117,12 +136,44 @@ async fn main(spawner: Spawner) {
     // Set the interrupt handler for GPIO interrupts.
     io.set_interrupt_handler(handler);
 
-    // Set GPIO19 as an output, and set its state high initially.
+    // Set GPIO19 as an output, and set its state low initially.
     let mut led = Output::new(peripherals.GPIO19, Level::Low, OutputConfig::default());
 
+    // Get the peripherals for the buzzer
     let buzzer = peripherals.GPIO2;
     let ledc = Ledc::new(peripherals.LEDC);
+
     
+    // set up bus for i2c stuff
+    let i2c = I2c::new(
+        peripherals.I2C1, 
+        I2cConfig::default()
+            .with_frequency(Rate::from_khz(400))
+            .with_timeout(BusTimeout::Maximum),
+        )
+        .unwrap()
+        .with_sda(peripherals.GPIO21)
+        .with_scl(peripherals.GPIO22)
+        .into_async();
+    let i2c_bus = RefCell::new(i2c);
+    let mut rtc = Pcf8563::new(RefCellDevice::new(&i2c_bus));
+    let mut imu = Mpu6886::new(RefCellDevice::new(&i2c_bus));
+
+    if let Err(_e) = imu.init() {
+        error!("unable to init imu");
+    }
+    
+    match rtc.datetime() {
+        Ok(dt) => info!("datetime {}", dt.second),
+        Err(e) => {
+            match e {
+                pcf8563::Error::I2cError(error_kind) => error!("i2c error: {}", error_kind),
+                pcf8563::Error::Other => error!("other error"),
+                _ => error!("mystery error"),
+            }
+        },
+    }
+
     // Set GPIO37 as an input
     let mut button_a = Input::new(peripherals.GPIO37, InputConfig::default());
     // Set GPIO39 as an input

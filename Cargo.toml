@@ -69,17 +69,24 @@ heapless = { version = "0.8.0", default-features = false }
 static_cell = { version = "2.1.0", features = ["nightly"] }
 mipidsi = "0.9.0"
 embedded-graphics = { version = "0.8.1", features = ["defmt"] }
-# axp192 = "0.2.0"
+axp192 = "0.2.0"
 display-interface-spi = "0.5.0"
 # embedded-hal = { version = "1.0.0", features = ["defmt-03"] }
 # embassy-embedded-hal = { version = "0.3.0", features = ["defmt"] }
 # embassy-sync = { version = "0.7.0", features = ["defmt"] }
 embedded-hal-bus = { version = "0.3.0", features = ["defmt-03", "async"] }
+pcf8563 = "0.1.0"
+mpu6886 = "0.1.0"
+
+
 
 [patch.crates-io]
 esp-hal = { git = "https://github.com/esp-rs/esp-hal", rev = "75f728aec9018e290d33910dde45b32bfe55b86f" } 
 esp-wifi = { git = "https://github.com/esp-rs/esp-hal", rev = "75f728aec9018e290d33910dde45b32bfe55b86f" } 
-esp-alloc = { git = "https://github.com/esp-rs/esp-hal", rev = "75f728aec9018e290d33910dde45b32bfe55b86f" } 
+esp-alloc = { git = "https://github.com/esp-rs/esp-hal", rev = "75f728aec9018e290d33910dde45b32bfe55b86f" }
+pcf8563 = { git = "https://github.com/hyx0329/pcf8563-rs", rev = "0c78da51d5fb429fd3c447103432a7de66cf1bed" }
+mpu6886 = { git = "https://github.com/hyx0329/mpu6886-rs", rev = "0a3f8860f9e0ad5b0b6e2d600edb67de20a91fa6" }
+
 
 [profile.dev]
 # Rust debug is too slow.

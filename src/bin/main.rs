@@ -7,9 +7,9 @@ use embassy_time::{Duration, Instant, Timer};
 use embedded_graphics::primitives::{PrimitiveStyleBuilder, Rectangle};
 use embedded_hal_bus::spi::ExclusiveDevice;
 use esp_hal::{
-    clock::CpuClock, gpio::{Event, Input, InputConfig, Io, Level, Output, OutputConfig}, handler, ledc::{channel::{self, ChannelIFace}, timer::TimerIFace, Ledc}, ram, spi::{master::{Config, Spi}, Mode}, time::Rate, timer::timg::TimerGroup
+    clock::CpuClock, gpio::{interconnect::OutputSignal, Event, Input, InputConfig, Io, Level, Output, OutputConfig}, handler, ledc::{channel::{self, ChannelIFace}, timer::TimerIFace, Ledc}, ram, spi::{master::{Config, Spi}, Mode}, time::Rate, timer::timg::TimerGroup
 };
-
+use esp_hal::gpio::interconnect::PeripheralOutput;
 use watchy_m5::{
     music::{self, Song},
     pink_panther,
@@ -49,43 +49,46 @@ async fn run() {
     }
 }
 
+#[embassy_executor::task]
+async fn sing(ledc: Ledc<'static>, mut buzzer: esp_hal::peripherals::GPIO2<'static>) {
+    let song = Song::new(pink_panther::TEMPO);
+
+    for (note, duration_type) in pink_panther::MELODY {
+        let note_duration = song.calc_note_duration(duration_type) as u64;
+        let pause_duration = note_duration / 10; // 10% of note_duration
+        if note == music::REST {
+            Timer::after(Duration::from_millis(note_duration)).await;
+            continue;
+        }
+        let freq = Rate::from_hz(note as u32);
+
+        let mut hstimer0 = ledc.timer::<HighSpeed>(timer::Number::Timer0);
+        hstimer0
+            .configure(timer::config::Config {
+                duty: timer::config::Duty::Duty10Bit,
+                clock_source: timer::HSClockSource::APBClk,
+                frequency: freq,
+            })
+            .unwrap();
+
+        let mut channel0 = ledc.channel(channel::Number::Channel0, buzzer.reborrow());
+        channel0
+            .configure(channel::config::Config {
+                timer: &hstimer0,
+                duty_pct: 50,
+                pin_config: channel::config::PinConfig::PushPull,
+            })
+            .unwrap();
+
+        Timer::after(Duration::from_millis(note_duration - pause_duration)).await;
+
+        channel0.set_duty(0).unwrap();
+        Timer::after(Duration::from_millis(pause_duration)).await;
+    }
+}
+
 const DISPLAY_WIDTH: u16 = 135;
 const DISPLAY_HEIGHT: u16 = 240;
-
-// use esp_hal::ledc::channel::ChannelIFace;
-// use esp_hal::ledc::timer::TimerIFace;
-// use esp_hal::ledc::{channel, timer, LSGlobalClkSource, Ledc, LowSpeed};
-// fn pwm_backlight() {
-//     let mut ledc = Ledc::new(peripherals.LEDC);
-//     ledc.set_global_slow_clock(LSGlobalClkSource::APBClk);
-//     let mut lstimer0 = ledc.timer::<LowSpeed>(timer::Number::Timer0);
-//     lstimer0
-//         .configure(timer::config::Config {
-//             duty: timer::config::Duty::Duty5Bit,
-//             clock_source: timer::LSClockSource::APBClk,
-//             frequency: Rate::from_khz(24),
-//         })
-//         .unwrap();
-
-//     let mut channel0 = ledc.channel(channel::Number::Channel0, backlight);
-//     channel0
-//         .configure(channel::config::Config {
-//             timer: &lstimer0,
-//             duty_pct: 50,
-//             pin_config: channel::config::PinConfig::PushPull,
-//         })
-//         .unwrap();
-
-//     if let Err(e) = channel0.set_duty(75) {
-//         error!("Couldn't set duty. {}", e);
-//     }
-// }
-
-
-fn blocking_delay(duration: Duration) {
-    let delay_start = Instant::now();
-    while delay_start.elapsed() < duration {}
-}
 
 
 #[esp_hal_embassy::main]
@@ -117,45 +120,9 @@ async fn main(spawner: Spawner) {
     // Set GPIO19 as an output, and set its state high initially.
     let mut led = Output::new(peripherals.GPIO19, Level::Low, OutputConfig::default());
 
-    let mut buzzer = peripherals.GPIO2;
+    let buzzer = peripherals.GPIO2;
     let ledc = Ledc::new(peripherals.LEDC);
-
-    let song = Song::new(pink_panther::TEMPO);
-
-    for (note, duration_type) in pink_panther::MELODY {
-        let note_duration = song.calc_note_duration(duration_type) as u64;
-        let pause_duration = note_duration / 10; // 10% of note_duration
-        if note == music::REST {
-            blocking_delay(Duration::from_millis(note_duration));
-            continue;
-        }
-        let freq = Rate::from_hz(note as u32);
-
-        let mut hstimer0 = ledc.timer::<HighSpeed>(timer::Number::Timer0);
-        hstimer0
-            .configure(timer::config::Config {
-                duty: timer::config::Duty::Duty10Bit,
-                clock_source: timer::HSClockSource::APBClk,
-                frequency: freq,
-            })
-            .unwrap();
-
-        let mut channel0 = ledc.channel(channel::Number::Channel0, buzzer.reborrow());
-        channel0
-            .configure(channel::config::Config {
-                timer: &hstimer0,
-                duty_pct: 50,
-                pin_config: channel::config::PinConfig::PushPull,
-            })
-            .unwrap();
-
-        blocking_delay(Duration::from_millis(note_duration - pause_duration)); // play 90%
-
-        channel0.set_duty(0).unwrap();
-        blocking_delay(Duration::from_millis(pause_duration)); // Pause for 10%
-    }
-
-
+    
     // Set GPIO37 as an input
     let mut button_a = Input::new(peripherals.GPIO37, InputConfig::default());
     // Set GPIO39 as an input
@@ -238,6 +205,7 @@ async fn main(spawner: Spawner) {
     // TODO: Spawn some tasks
     // let _ = spawner;
     spawner.spawn(run()).ok();
+    spawner.spawn(sing(ledc, buzzer)).ok();
 
     let mut counter = 0;
     loop {

@@ -77,6 +77,7 @@ display-interface-spi = "0.5.0"
 embedded-hal-bus = { version = "0.3.0", features = ["defmt-03", "async"] }
 pcf8563 = "0.1.0"
 mpu6886 = "0.1.0"
+embassy-sync = { version = "0.7.0", features = ["defmt"] }
 
 
 [patch.crates-io]

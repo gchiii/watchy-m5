@@ -17,16 +17,15 @@ use esp_hal::{
     
 use mpu6886::Mpu6886;
 use pcf8563::Pcf8563;
+
 use watchy_m5::{
-    music::{self, Song},
+    music::{self, Note, Song},
     pink_panther,
 };
 use esp_hal::ledc::timer;
 use esp_hal::{
     ledc::HighSpeed,
 };
-
-use axp192_dd::{Axp192Async, AxpError, ChargeCurrentValue, Gpio0FunctionSelect, LdoId};
 
 use mipidsi::interface::SpiInterface;
 use mipidsi::models::ST7789;
@@ -66,7 +65,7 @@ async fn run() {
 async fn sing(ledc: Ledc<'static>, mut buzzer: esp_hal::peripherals::GPIO2<'static>) {
     let song = Song::new(pink_panther::TEMPO);
 
-    for (note, duration_type) in pink_panther::MELODY {
+    for Note(note, duration_type) in pink_panther::MELODY {
         let note_duration = song.calc_note_duration(duration_type) as u64;
         let pause_duration = note_duration / 10; // 10% of note_duration
         if note == music::REST {
@@ -160,15 +159,12 @@ async fn main(spawner: Spawner) {
         error!("unable to init imu");
     }
     
-    match rtc.datetime() {
-        Ok(dt) => info!("datetime {}", dt.second),
-        Err(e) => {
-            match e {
-                pcf8563::Error::I2cError(error_kind) => error!("i2c error: {}", error_kind),
-                pcf8563::Error::Other => error!("other error"),
-                _ => error!("mystery error"),
-            }
-        },
+    if let Ok(pwr_loss) = rtc.power_loss() {
+        if pwr_loss {
+            info!("RTC lost power!");
+        } else {
+            info!("RTC has kept power.");
+        }
     }
 
     // Set GPIO37 as an input
@@ -268,12 +264,24 @@ async fn main(spawner: Spawner) {
         text_x = if right.x <= 0 { DISPLAY_WIDTH.into() } else { text_x - 10 };
         led.toggle();
 
+        match rtc.datetime() {
+            Ok(dt) => info!("datetime {:02}:{:02}:{:02} ", dt.hour, dt.minute, dt.second),
+            Err(e) => {
+                match e {
+                    pcf8563::Error::I2cError(error_kind) => error!("i2c error: {}", error_kind),
+                    pcf8563::Error::Other => error!("other error"),
+                    _ => error!("mystery error"),
+                }
+            },
+        }
+
         // info!("Hello world!");
         Timer::after(Duration::from_secs(1)).await;
     }
 
     // for inspiration have a look at the examples at https://github.com/esp-rs/esp-hal/tree/esp-hal-v1.0.0-beta.0/examples/src/bin
 }
+
 
 #[handler]
 #[ram]

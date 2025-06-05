@@ -110,3 +110,5 @@ impl Song {
         }
     }
 }
+
+pub struct Note (pub f64, pub i16);

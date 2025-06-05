@@ -79,7 +79,6 @@ pcf8563 = "0.1.0"
 mpu6886 = "0.1.0"
 
 
-
 [patch.crates-io]
 esp-hal = { git = "https://github.com/esp-rs/esp-hal", rev = "75f728aec9018e290d33910dde45b32bfe55b86f" } 
 esp-wifi = { git = "https://github.com/esp-rs/esp-hal", rev = "75f728aec9018e290d33910dde45b32bfe55b86f" } 

@@ -3,37 +3,30 @@
 
 use defmt::{error, info};
 use embassy_executor::Spawner;
-use embassy_time::{Duration, Instant, Timer};
-use embedded_graphics::primitives::{PrimitiveStyleBuilder, Rectangle};
+use embassy_time::{Duration, Timer};
 use embedded_hal_bus::spi::ExclusiveDevice;
 use embedded_hal_bus::i2c::RefCellDevice;
 
 use esp_hal::{
-    ram, 
-    handler, 
-    clock::CpuClock, 
-    time::Rate, 
-    timer::timg::TimerGroup,
-    gpio::{interconnect::OutputSignal, Event, Input, InputConfig, Io, Level, Output, OutputConfig}, 
-    ledc::{
+    clock::CpuClock, gpio::{Event, Input, InputConfig, Io, Level, Output, OutputConfig}, handler, i2c::master::{BusTimeout, Config as I2cConfig, Error as I2cError, I2c}, ledc::{
         channel::{self, ChannelIFace}, 
         timer::TimerIFace, 
         Ledc
-    }, 
-    spi::{master::{Config, Spi}, Mode}, 
-    i2c::master::{BusTimeout, Config as I2cConfig, I2c},
+    }, ram, spi::{master::{Config, Spi}, Mode}, time::Rate, timer::timg::TimerGroup, Async
 };
-use esp_hal::gpio::interconnect::PeripheralOutput;
+    
 use mpu6886::Mpu6886;
 use pcf8563::Pcf8563;
 use watchy_m5::{
     music::{self, Song},
     pink_panther,
 };
-use esp_hal::{ledc::timer, main};
+use esp_hal::ledc::timer;
 use esp_hal::{
     ledc::HighSpeed,
 };
+
+use axp192_dd::{Axp192Async, AxpError, ChargeCurrentValue, Gpio0FunctionSelect, LdoId};
 
 use mipidsi::interface::SpiInterface;
 use mipidsi::models::ST7789;
@@ -47,14 +40,12 @@ use embedded_graphics::{
     mono_font::{ascii::FONT_10X20, MonoTextStyle},
     pixelcolor::Rgb565,
     prelude::*,
-    primitives::{Circle, Primitive, PrimitiveStyle, Triangle},
     text::Text,
 };
 
 extern crate alloc;
 
 /// Constants used on this stick
-const AXP192_ADDR: u8 = 0x34;
 const DISPLAY_WIDTH: u16 = 135;
 const DISPLAY_HEIGHT: u16 = 240;
 
@@ -143,21 +134,27 @@ async fn main(spawner: Spawner) {
     let buzzer = peripherals.GPIO2;
     let ledc = Ledc::new(peripherals.LEDC);
 
-    
     // set up bus for i2c stuff
+    let mut i2c_sda = peripherals.GPIO21;
+    let mut i2c_scl = peripherals.GPIO22;
+    let mut i2c_bus1 = peripherals.I2C1;
+    let i2c1_cfg =  I2cConfig::default()
+                .with_frequency(Rate::from_khz(400))
+                .with_timeout(BusTimeout::Maximum);
+    
     let i2c = I2c::new(
-        peripherals.I2C1, 
-        I2cConfig::default()
-            .with_frequency(Rate::from_khz(400))
-            .with_timeout(BusTimeout::Maximum),
+        i2c_bus1.reborrow(),
+        i2c1_cfg,
         )
         .unwrap()
-        .with_sda(peripherals.GPIO21)
-        .with_scl(peripherals.GPIO22)
+        .with_sda(i2c_sda.reborrow())
+        .with_scl(i2c_scl.reborrow())
         .into_async();
+    
     let i2c_bus = RefCell::new(i2c);
     let mut rtc = Pcf8563::new(RefCellDevice::new(&i2c_bus));
     let mut imu = Mpu6886::new(RefCellDevice::new(&i2c_bus));
+
 
     if let Err(_e) = imu.init() {
         error!("unable to init imu");
@@ -234,7 +231,7 @@ async fn main(spawner: Spawner) {
     let text_style = MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE);
     let text = "Hello World ^_^;";
     let mut text_x: i32 = DISPLAY_WIDTH.into();
-    let mut text_y: i32 = (DISPLAY_HEIGHT / 2).into();
+    let text_y: i32 = (DISPLAY_HEIGHT / 2).into();
 
     // Alternating color
     let colors = [Rgb565::RED, Rgb565::GREEN, Rgb565::BLUE];

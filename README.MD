@@ -21,6 +21,9 @@
 
 # IO / Peripheral mapping
 
+This does not have the AXP192 PMU
+
+
 ## Single Pin elements
 - IR emitter and Red LED - GPIO19
 - Button A - GPIO37

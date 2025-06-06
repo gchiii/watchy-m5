@@ -1,3 +1,7 @@
+use defmt::error;
+use embassy_time::{Duration, Timer};
+use esp_hal::{ledc::{channel::{self, ChannelIFace}, timer::{self, TimerIFace}, HighSpeed, Ledc}, time::Rate};
+
 #[allow(unused)]
 // Note frequencies in Hertz as f64
 pub const NOTE_B0: f64 = 31.0;
@@ -91,6 +95,49 @@ pub const NOTE_D8: f64 = 4699.0;
 pub const NOTE_DS8: f64 = 4978.0;
 pub const REST: f64 = 0.0; // No sound, for pauses
 
+pub struct Note (pub f64, pub i16);
+
+pub struct Buzzer {
+    ledc: Ledc<'static>, 
+    buzzer: esp_hal::peripherals::GPIO2<'static>,
+}
+
+impl Buzzer {
+    pub fn new(ledc: Ledc<'static>, buzzer: esp_hal::peripherals::GPIO2<'static>) -> Self {
+        Self { ledc, buzzer }
+    }
+
+    pub async fn play_tone(&mut self, rate: Rate, duration_ms: u64) {
+        let pause_duration = duration_ms / 10; // 10% of duration_ms
+
+        let mut hstimer0 = self.ledc.timer::<HighSpeed>(timer::Number::Timer0);
+        let mut channel0 = self.ledc.channel(channel::Number::Channel0, self.buzzer.reborrow());
+        let hstimer_cfg = timer::config::Config {
+            duty: timer::config::Duty::Duty10Bit,
+            clock_source: timer::HSClockSource::APBClk,
+            frequency: rate,
+        };
+        if let Err(e) = hstimer0.configure(hstimer_cfg) {
+            error!("problem configuring hstimer. {}", e);
+        }
+        let channel_cfg = channel::config::Config {
+            timer: &hstimer0,
+            duty_pct: 50,
+            pin_config: channel::config::PinConfig::PushPull,
+        };
+        if let Err(e) = channel0.configure(channel_cfg){
+            error!("problem configuring channel. {}", e);
+        }
+
+        Timer::after(Duration::from_millis(duration_ms - pause_duration)).await;
+
+        channel0.set_duty(0).unwrap();
+        Timer::after(Duration::from_millis(pause_duration)).await;
+
+    }
+
+}
+
 pub struct Song<'a> {
     whole_note: u32,
     pub notes: &'a [Note],
@@ -110,6 +157,28 @@ impl<'a> Song<'a> {
             (duration as f64 * 1.5) as u32
         }
     }
+
+    pub async fn play_one_note(&self, note: &Note, buzzer: &mut Buzzer) {
+        let Note(freq_hz, duration_type) = note;
+        let note_duration = self.calc_note_duration(*duration_type) as u64;
+        let freq_rate = Rate::from_hz(*freq_hz as u32);
+        if *freq_hz == REST {
+            Timer::after(Duration::from_millis(note_duration)).await;
+        } else {
+            buzzer.play_tone(freq_rate, note_duration).await
+        }
+    }
+
+    pub async fn play_on(&self, buzzer: &mut Buzzer) {
+        for note in self.notes {
+            self.play_one_note(note, buzzer).await
+        }
+    }
+
 }
 
-pub struct Note (pub f64, pub i16);
+pub enum MusicCommand<'a> {
+    Pause,
+    Resume,
+    PlaySong(Song<'a>),
+}

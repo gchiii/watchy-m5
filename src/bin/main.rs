@@ -9,8 +9,8 @@ use embedded_hal_bus::i2c::RefCellDevice;
 
 use esp_hal::{
     clock::CpuClock, gpio::{Event, Input, InputConfig, Io, Level, Output, OutputConfig}, handler, i2c::master::{BusTimeout, Config as I2cConfig, Error as I2cError, I2c}, ledc::{
-        channel::{self, ChannelIFace}, 
-        timer::TimerIFace, 
+        channel::{self, Channel, ChannelIFace}, 
+        timer::{TimerIFace}, 
         Ledc
     }, ram, spi::{master::{Config, Spi}, Mode}, time::Rate, timer::timg::TimerGroup, Async
 };
@@ -63,40 +63,74 @@ async fn run() {
 
 #[embassy_executor::task]
 async fn sing(ledc: Ledc<'static>, mut buzzer: esp_hal::peripherals::GPIO2<'static>) {
-    let song = Song::new(pink_panther::TEMPO);
+    let song = Song::new(pink_panther::TEMPO, pink_panther::MELODY.as_slice());
 
-    for Note(note, duration_type) in pink_panther::MELODY {
-        let note_duration = song.calc_note_duration(duration_type) as u64;
+    for Note(note, duration_type) in song.notes {
+        let mut channel0 = ledc.channel(channel::Number::Channel0, buzzer.reborrow());
+        let mut hstimer0 = ledc.timer::<HighSpeed>(timer::Number::Timer0);
+        let note_duration = song.calc_note_duration(*duration_type) as u64;
         let pause_duration = note_duration / 10; // 10% of note_duration
-        if note == music::REST {
+        let freq = Rate::from_hz(*note as u32);
+        if *note == music::REST {
             Timer::after(Duration::from_millis(note_duration)).await;
             continue;
         }
-        let freq = Rate::from_hz(note as u32);
-
-        let mut hstimer0 = ledc.timer::<HighSpeed>(timer::Number::Timer0);
-        hstimer0
-            .configure(timer::config::Config {
-                duty: timer::config::Duty::Duty10Bit,
-                clock_source: timer::HSClockSource::APBClk,
-                frequency: freq,
-            })
-            .unwrap();
-
-        let mut channel0 = ledc.channel(channel::Number::Channel0, buzzer.reborrow());
-        channel0
-            .configure(channel::config::Config {
-                timer: &hstimer0,
-                duty_pct: 50,
-                pin_config: channel::config::PinConfig::PushPull,
-            })
-            .unwrap();
+        let hstimer_cfg = timer::config::Config {
+            duty: timer::config::Duty::Duty10Bit,
+            clock_source: timer::HSClockSource::APBClk,
+            frequency: freq,
+        };
+        if let Err(e) = hstimer0.configure(hstimer_cfg) {
+            error!("problem configuring hstimer. {}", e);
+        }
+        let channel_cfg = channel::config::Config {
+            timer: &hstimer0,
+            duty_pct: 50,
+            pin_config: channel::config::PinConfig::PushPull,
+        };
+        if let Err(e) = channel0.configure(channel_cfg){
+            error!("problem configuring channel. {}", e);
+        }
 
         Timer::after(Duration::from_millis(note_duration - pause_duration)).await;
 
         channel0.set_duty(0).unwrap();
         Timer::after(Duration::from_millis(pause_duration)).await;
     }
+
+    // for Note(note, duration_type) in pink_panther::MELODY {
+    //     let mut channel0 = ledc.channel(channel::Number::Channel0, buzzer.reborrow());
+    //     let mut hstimer0 = ledc.timer::<HighSpeed>(timer::Number::Timer0);
+    //     let note_duration = song.calc_note_duration(duration_type) as u64;
+    //     let pause_duration = note_duration / 10; // 10% of note_duration
+    //     if note == music::REST {
+    //         Timer::after(Duration::from_millis(note_duration)).await;
+    //         continue;
+    //     }
+    //     let freq = Rate::from_hz(note as u32);
+
+    //     let hstimer_cfg = timer::config::Config {
+    //         duty: timer::config::Duty::Duty10Bit,
+    //         clock_source: timer::HSClockSource::APBClk,
+    //         frequency: freq,
+    //     };
+    //     if let Err(e) = hstimer0.configure(hstimer_cfg) {
+    //         error!("problem configuring hstimer. {}", e);
+    //     }
+    //     let channel_cfg = channel::config::Config {
+    //         timer: &hstimer0,
+    //         duty_pct: 50,
+    //         pin_config: channel::config::PinConfig::PushPull,
+    //     };
+    //     if let Err(e) = channel0.configure(channel_cfg){
+    //         error!("problem configuring channel. {}", e);
+    //     }
+
+    //     Timer::after(Duration::from_millis(note_duration - pause_duration)).await;
+
+    //     channel0.set_duty(0).unwrap();
+    //     Timer::after(Duration::from_millis(pause_duration)).await;
+    // }
 }
 
 
@@ -276,7 +310,7 @@ async fn main(spawner: Spawner) {
         }
 
         // info!("Hello world!");
-        Timer::after(Duration::from_secs(1)).await;
+        Timer::after(Duration::from_millis(250)).await;
     }
 
     // for inspiration have a look at the examples at https://github.com/esp-rs/esp-hal/tree/esp-hal-v1.0.0-beta.0/examples/src/bin

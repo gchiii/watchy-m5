@@ -91,14 +91,15 @@ pub const NOTE_D8: f64 = 4699.0;
 pub const NOTE_DS8: f64 = 4978.0;
 pub const REST: f64 = 0.0; // No sound, for pauses
 
-pub struct Song {
+pub struct Song<'a> {
     whole_note: u32,
+    pub notes: &'a [Note],
 }
 
-impl Song {
-    pub fn new(tempo: u16) -> Self {
+impl<'a> Song<'a> {
+    pub fn new(tempo: u16, notes: &'a [Note]) -> Self {
         let whole_note = (60_000 * 4) / tempo as u32;
-        Self { whole_note }
+        Self { whole_note, notes }
     }
 
     pub fn calc_note_duration(&self, divider: i16) -> u32 {

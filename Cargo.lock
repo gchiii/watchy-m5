@@ -1663,6 +1663,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "thiserror-impl-no-std"
+version = "2.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "58e6318948b519ba6dc2b442a6d0b904ebfb8d411a3ad3e07843615a72249758"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
+name = "thiserror-no-std"
+version = "2.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a3ad459d94dd517257cc96add8a43190ee620011bb6e6cdc82dafd97dfafafea"
+dependencies = [
+ "thiserror-impl-no-std",
+]
+
+[[package]]
 name = "toml"
 version = "0.8.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1811,12 +1831,14 @@ dependencies = [
 name = "watchy-m5"
 version = "0.1.0"
 dependencies = [
+ "allocator-api2",
  "axp192",
  "bleps",
  "critical-section",
  "defmt 1.0.1",
  "display-interface-spi",
  "embassy-executor",
+ "embassy-futures",
  "embassy-net",
  "embassy-sync 0.7.0",
  "embassy-time",
@@ -1836,6 +1858,8 @@ dependencies = [
  "pcf8563",
  "smoltcp",
  "static_cell",
+ "thiserror",
+ "thiserror-no-std",
 ]
 
 [[package]]

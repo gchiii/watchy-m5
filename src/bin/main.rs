@@ -9,28 +9,20 @@ use embedded_hal_bus::i2c::RefCellDevice;
 
 use esp_hal::{
     clock::CpuClock, 
-    gpio::{interconnect::PeripheralOutput, Event, Input, InputConfig, Io, Level, Output, OutputConfig}, 
+    gpio::{Event, Input, InputConfig, Io, Level, Output, OutputConfig}, 
     handler, 
-    i2c::master::{BusTimeout, Config as I2cConfig, Error as I2cError, I2c}, 
+    i2c::master::{BusTimeout, Config as I2cConfig, I2c}, 
     ledc::Ledc, 
     ram, 
-    spi::{master::{Config, Spi}, Mode}, time::Rate, timer::timg::TimerGroup, Async
+    spi::{master::{Config, Spi}, Mode}, time::Rate, timer::timg::TimerGroup
 };
     
 use mpu6886::Mpu6886;
 use pcf8563::Pcf8563;
 
-use watchy_m5::{
-    music::{self, Buzzer, NoteData, Song, BuzzerCommand},
-    pink_panther,
-};
-use esp_hal::ledc::timer;
-use esp_hal::{
-    ledc::HighSpeed,
-};
+use watchy_m5::music::{Buzzer, BuzzerCommand, BuzzerState};
 
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
-use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 
 use mipidsi::interface::SpiInterface;
 use mipidsi::models::ST7789;
@@ -73,16 +65,11 @@ async fn run() {
 
 
 #[embassy_executor::task]
-// async fn sound_task(ledc: Ledc<'static>, mut buzzer: Output<'static>) {
-// async fn sound_task(ledc: Ledc<'static>, buzzer_pin: esp_hal::peripherals::GPIO2<'static>, rx: embassy_sync::channel::Receiver<'static, NoopRawMutex, SoundCommand, 3>) {
-async fn sound_task(ledc: Ledc<'static>, buzzer_pin: esp_hal::peripherals::GPIO2<'static>) {
-
-    let rx = SOUND_CHANNEL.receiver();
-
-    
-    let song = Song::new(pink_panther::TEMPO, pink_panther::MELODY.as_slice());
-    let mut buzzer = Buzzer::new(ledc, buzzer_pin, rx);
-    song.play_on(&mut buzzer).await
+async fn sound_task(buzzer: Buzzer<'static>) {
+    let mut buzzer_state = BuzzerState::default();
+    loop {
+        buzzer_state = buzzer.execute(buzzer_state).await;
+    }
 }
 
 
@@ -117,7 +104,7 @@ async fn main(spawner: Spawner) {
     let mut led = Output::new(peripherals.GPIO19, Level::Low, OutputConfig::default());
 
     // Get the peripherals for the buzzer
-    let buzzer = peripherals.GPIO2;
+    let buzzer_pin = peripherals.GPIO2;
     let ledc = Ledc::new(peripherals.LEDC);
 
     // set up bus for i2c stuff
@@ -231,17 +218,19 @@ async fn main(spawner: Spawner) {
     // Clear the display initially
     display.clear(colors[0]).unwrap();
 
-    display_bl.set_high();
+    display_bl.set_high();        // let s = self.state;
+
 
     
     // let mut snd_tx= sound_channel.sender();
     // let snd_tx = SOUND_CHANNEL.sender();
     // let snd_rx: embassy_sync::channel::Receiver<'_, CriticalSectionRawMutex, SoundCommand, 3> = SOUND_CHANNEL.receiver();
 
+    let buzzer = Buzzer::new(ledc, buzzer_pin, SOUND_CHANNEL.receiver());
     // TODO: Spawn some tasks
     // let _ = spawner;
     spawner.spawn(run()).ok();
-    spawner.spawn(sound_task(ledc, buzzer)).ok();
+    spawner.spawn(sound_task(buzzer)).ok();
 
     let mut counter = 0;
     loop {

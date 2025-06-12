@@ -1,3 +1,5 @@
+use core::marker::PhantomData;
+
 use thiserror_no_std::Error;
 use allocator_api2::vec::Vec;
 use defmt::error;
@@ -124,7 +126,7 @@ impl NoteLength {
 }
 
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NoteData (pub f64, pub i16);
 
 impl NoteData {
@@ -149,218 +151,136 @@ pub struct Note {
     pub duration_ms: u64,
 }
 
-#[derive(Debug, defmt::Format, Default)]
-pub enum BuzzerState {
-    #[default] 
-    Silent,
-    Play(Note),
-}
-
-impl BuzzerState {
-    // pub async fn execute(self, buzzer: Buzzer) -> Result<self> {
-    //     match self {
-    //         BuzzerState::Silent => todo!(),
-    //         BuzzerState::Play(tone) => buzzer,
-    //     }
-    // }
-}
-
-
 #[derive(Debug, Error)]
 pub enum BuzzerError {
     TimerError(#[from] LedcTimerError),
     ChannelError(#[from] LedcChannelError),
+    NoSong,
 }
+
+#[derive(Debug, defmt::Format, Default, PartialEq, Clone)]
+pub enum BuzzerState<'a> {
+    #[default] 
+    Stopped,
+    Paused(Song<'a>),
+    Playing(Song<'a>),
+}
+
+impl BuzzerState<'_> {
+    async fn execute(self, rx: Receiver<'static, CriticalSectionRawMutex, BuzzerCommand<'static>, 3>) -> Self {
+        let state = self;
+        match (state, rx.receive().await) {
+            (BuzzerState::Stopped, BuzzerCommand::Play(song)) => BuzzerState::Playing(song),
+            (BuzzerState::Paused(song), BuzzerCommand::Resume) => BuzzerState::Playing(song),
+            (BuzzerState::Paused(_), BuzzerCommand::Play(song)) => BuzzerState::Playing(song),
+            (BuzzerState::Playing(song), BuzzerCommand::Pause) => BuzzerState::Paused(song),
+            (BuzzerState::Playing(_), BuzzerCommand::Play(song)) => BuzzerState::Playing(song),
+            (BuzzerState::Stopped, BuzzerCommand::Pause) => BuzzerState::Stopped,
+            (BuzzerState::Stopped, BuzzerCommand::Resume) => BuzzerState::Stopped,
+            (BuzzerState::Paused(song), BuzzerCommand::Pause) => BuzzerState::Paused(song),
+            (BuzzerState::Playing(song), BuzzerCommand::Resume) => BuzzerState::Playing(song),
+        }
+    }
+}
+
+#[derive(Clone, PartialEq)]
+pub enum BuzzerCommand<'a> {
+    Pause,
+    Resume,
+    Play(Song<'a>),
+}
+
 
 pub struct Buzzer<'a> {
     ledc: Ledc<'static>, 
-    buzzer: esp_hal::peripherals::GPIO2<'static>,
-    rx: Receiver<'static, CriticalSectionRawMutex, BuzzerCommand, 3>,
-    hstimer: Option<timer::Timer<'a, HighSpeed>>,
-    channel: Option<channel::Channel<'a, HighSpeed>>,
-    pub state: BuzzerState,
+    pin: esp_hal::peripherals::GPIO2<'static>,
+    rx: Receiver<'static, CriticalSectionRawMutex, BuzzerCommand<'static>, 3>,
+    pub state: BuzzerState<'a>,
 }
 
 
 impl<'a> Buzzer<'a> {
-    pub fn new(ledc: Ledc<'static>, buzzer: esp_hal::peripherals::GPIO2<'static>, rx: Receiver<'static, CriticalSectionRawMutex, BuzzerCommand, 3>) -> Self {
-        Self { ledc, buzzer, rx, state: BuzzerState::Silent, hstimer: None, channel: None }
+    pub fn new(ledc: Ledc<'static>, pin: esp_hal::peripherals::GPIO2<'static> , rx: Receiver<'static, CriticalSectionRawMutex, BuzzerCommand, 3>) -> Self {
+        Self { ledc, pin, rx, state: BuzzerState::default() }
     }
-
-    // pub async fn execute(&mut self) -> Result<BuzzerState> {
-    //     match self.state {
-    //         BuzzerState::Silent => {
-    //             match self.rx.receive().await {
-    //                 BuzzerCommand::Pause => todo!(),
-    //                 BuzzerCommand::Resume => todo!(),
-    //                 BuzzerCommand::Play(song) => todo!(),
-    //             }
-    //         },
-    //         BuzzerState::Play(tone) => todo!(),
-    //     }
-    // }
-
-
-    fn cfg_timer(&mut self, tone: Note) -> Result<timer::Timer<'a, HighSpeed>, BuzzerError> {
-        let mut hstimer0: timer::Timer<'a, HighSpeed> = self.ledc.timer::<HighSpeed>(timer::Number::Timer0);
-        hstimer0
+    async fn alternate_play_note(&self, note: Note) -> Result<(), BuzzerError>{
+        let mut hstim = self.ledc.timer::<HighSpeed>(timer::Number::Timer0);
+        hstim
             .configure(timer::config::Config {
                 duty: timer::config::Duty::Duty10Bit,
                 clock_source: timer::HSClockSource::APBClk,
-                frequency: tone.frequency,
+                frequency: note.frequency,
             })?;
-        Ok(hstimer0)
-    }
 
-    fn cfg_channel(&'a mut self, tone: Note) -> Result< &'a mut channel::Channel<'a, HighSpeed>, BuzzerError> {
-        let hstimer0 = {
-            let hstim = self.cfg_timer(tone)?;
-            self.hstimer.insert(hstim)
-        };
-        // Initialize LEDC Channel with duty cycle 50%
-        let mut channel0: channel::Channel<'a, HighSpeed> = self.ledc.channel(channel::Number::Channel0, self.buzzer.reborrow());
+        let mut channel0 = self.ledc.channel(channel::Number::Channel0, unsafe { self.pin.clone_unchecked() });
         channel0
             .configure(channel::config::Config {
-                timer: hstimer0,
-                duty_pct: 0,
-                pin_config: channel::config::PinConfig::PushPull,
-            })?;
-        Ok(self.channel.insert(channel0))
-    }
-
-    pub fn start_tone(&'a mut self, tone: Note) -> Result<Duration, BuzzerError> {
-        let chan = self.cfg_channel(tone)?;
-        chan.set_duty(50)?;
-
-        let pause_duration = tone.duration_ms / 10; // 10% of duration_ms
-        Ok(Duration::from_millis(tone.duration_ms - pause_duration))
-    }
-
-    fn end_tone(&'a mut self) {
-        if let Some(chan) = self.channel.take() {
-            chan.set_duty(0);
-        }
-    }
-
-    fn play_a_note(&'a mut self, tone: Note) -> Result<(), BuzzerError> {
-        let hstimer0 = {
-            let hstim = self.cfg_timer(tone)?;
-            self.hstimer.insert(hstim)
-        };
-        // Initialize LEDC Channel with duty cycle 50%
-        let mut channel0: channel::Channel<'a, HighSpeed> = self.ledc.channel(channel::Number::Channel0, self.buzzer.reborrow());
-        channel0
-            .configure(channel::config::Config {
-                timer: hstimer0,
+                timer: &hstim,
                 duty_pct: 50,
                 pin_config: channel::config::PinConfig::PushPull,
             })?;
+        let pause_duration = note.duration_ms / 10; // 10% of duration_ms
+
+        Timer::after(Duration::from_millis(note.duration_ms - pause_duration)).await;
+        channel0.set_duty(0)?;
+        Timer::after(Duration::from_millis(pause_duration)).await;
+
         Ok(())
     }
 
-    pub async fn sound(&mut self, tone: Note) {
-        let pause_duration = tone.duration_ms / 10; // 10% of duration_ms
-
-        let mut hstimer0: timer::Timer<'static, HighSpeed> = self.ledc.timer::<HighSpeed>(timer::Number::Timer0);
-        let mut channel0: channel::Channel<'_, HighSpeed> = self.ledc.channel(channel::Number::Channel0, self.buzzer.reborrow());
-        let hstimer_cfg = timer::config::Config {
-            duty: timer::config::Duty::Duty10Bit,
-            clock_source: timer::HSClockSource::APBClk,
-            frequency: tone.frequency,
+    pub async fn execute(&self, mut state: BuzzerState<'a>) -> BuzzerState<'a>{
+        let rx = self.rx;
+        state = match state {
+            BuzzerState::Playing(mut song) => {
+                match song.next_note() {
+                    Some(note) => {
+                        if let Err(_e) = self.alternate_play_note(note).await {
+                            error!("problem playing note");
+                            BuzzerState::Stopped
+                        } else {
+                            BuzzerState::Playing(song)
+                        }
+                    },
+                    None => BuzzerState::Stopped,
+                }
+            },
+            BuzzerState::Stopped => BuzzerState::Stopped,
+            BuzzerState::Paused(song) => BuzzerState::Paused(song),
         };
-        if let Err(e) = hstimer0.configure(hstimer_cfg) {
-            error!("problem configuring hstimer. {}", e);
-        }
-        let channel_cfg = channel::config::Config {
-            timer: &hstimer0,
-            duty_pct: 50,
-            pin_config: channel::config::PinConfig::PushPull,
-        };
-        if let Err(e) = channel0.configure(channel_cfg){
-            error!("problem configuring channel. {}", e);
-        }
-
-        Timer::after(Duration::from_millis(tone.duration_ms - pause_duration)).await;
-
-        channel0.set_duty(0).unwrap();
-        Timer::after(Duration::from_millis(pause_duration)).await;
-
-    }
-
-    pub async fn play_tone(&mut self, rate: Rate, duration_ms: u64) {
-        let pause_duration = duration_ms / 10; // 10% of duration_ms
-
-        let mut hstimer0 = self.ledc.timer::<HighSpeed>(timer::Number::Timer0);
-        let mut channel0 = self.ledc.channel(channel::Number::Channel0, self.buzzer.reborrow());
-        let hstimer_cfg = timer::config::Config {
-            duty: timer::config::Duty::Duty10Bit,
-            clock_source: timer::HSClockSource::APBClk,
-            frequency: rate,
-        };
-        if let Err(e) = hstimer0.configure(hstimer_cfg) {
-            error!("problem configuring hstimer. {}", e);
-        }
-        let channel_cfg = channel::config::Config {
-            timer: &hstimer0,
-            duty_pct: 50,
-            pin_config: channel::config::PinConfig::PushPull,
-        };
-        if let Err(e) = channel0.configure(channel_cfg){
-            error!("problem configuring channel. {}", e);
-        }
-
-        Timer::after(Duration::from_millis(duration_ms - pause_duration)).await;
-
-        channel0.set_duty(0).unwrap();
-        Timer::after(Duration::from_millis(pause_duration)).await;
-
+        state.execute(rx).await
     }
 
 }
 
 
-pub enum BuzzerCommand {
-    Pause,
-    Resume,
-    Play(Song),
-}
-
-async fn sound_process(rx: Receiver<'_, CriticalSectionRawMutex, BuzzerCommand, 3>) {
-    loop {        
-        match rx.receive().await {
-            BuzzerCommand::Pause => continue,
-            BuzzerCommand::Resume => todo!(),
-            BuzzerCommand::Play(song) => todo!(),
-        }
-    }
-}
-
-pub struct Song {
+#[derive(Debug, Clone, PartialEq)]
+pub struct Song<'s> {
     whole_note: u32,
     pub notes: Vec<NoteData>,
+    index: usize,
+    _phantom: PhantomData<&'s NoteData>,
 }
 
-// impl Iterator for Song {
-//     type Item;
 
-//     fn next(&mut self) -> Option<Self::Item> {
-//         todo!()
-//     }
-// }
-
-impl Song {
+impl Song<'_> {
     pub fn new(tempo: u16, some_notes: &[NoteData]) -> Self {
         let whole_note = (60_000 * 4) / tempo as u32;
         let notes: Vec<NoteData> = some_notes.into();
-        Self { whole_note, notes }
+        Self { whole_note, notes, _phantom: PhantomData, index: 0 }
+    }
+    
+    fn create_note(&self, note: &NoteData) -> Note {
+        note.to_note(self.whole_note)
     }
 
-    fn create_note(self, note: &NoteData) -> Note {
-        note.to_note(self.whole_note)
-        // let NoteData(freq_hz, duration_type) = note;
-        // let note_duration = self.calc_note_duration(*duration_type) as u64;
-        // let freq_rate = Rate::from_hz(*freq_hz as u32);
-        // Note { frequency: freq_rate, duration_ms: note_duration }
+    pub fn next_note(&mut self) -> Option<Note> {
+        let index = self.index;
+        if let Some(n) = self.notes.get(index) {
+            self.index = index + 1;
+            Some(self.create_note(n))
+        } else {
+            None
+        }
     }
 
     pub fn calc_note_duration(&self, divider: i16) -> u32 {
@@ -371,23 +291,5 @@ impl Song {
             (duration as f64 * 1.5) as u32
         }
     }
-
-    pub async fn play_one_note(&self, note: NoteData, buzzer: &mut Buzzer<'_>) {
-        let NoteData(freq_hz, duration_type) = note;
-        let note_duration = self.calc_note_duration(duration_type) as u64;
-        let freq_rate = Rate::from_hz(freq_hz as u32);
-        if freq_hz == REST {
-            Timer::after(Duration::from_millis(note_duration)).await;
-        } else {
-            buzzer.play_tone(freq_rate, note_duration).await
-        }
-    }
-
-    pub async fn play_on(&self, buzzer: &mut Buzzer<'_>) {
-        for note in self.notes.iter() {
-            self.play_one_note(*note, buzzer).await
-        }
-    }
-
 }
 

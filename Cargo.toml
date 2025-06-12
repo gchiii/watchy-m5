@@ -80,8 +80,8 @@ mpu6886 = "0.1.0"
 embassy-sync = { version = "0.7.0", features = ["defmt"] }
 allocator-api2 = { version = "0.3", default-features = false, features = ["alloc"] }
 embassy-futures = { version = "0.1.1", features = ["defmt"] }
-thiserror = { version = "2.0.12", default-features = false }
 thiserror-no-std = "2.0.2"
+no-std-compat2 = "0.4.5"
 
 
 [patch.crates-io]

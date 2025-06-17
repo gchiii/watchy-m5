@@ -1,3 +1,5 @@
+use crate::buzzer::{BuzzerCommand, BuzzerSender};
+
 use {esp_backtrace as _, esp_println as _};
 
 use core::marker::PhantomData;
@@ -127,208 +129,123 @@ impl NoteLength {
     }    
 }
 
+pub type MusicNoteDuration = i16;
+pub type MusicNoteHertz = f64;
+pub type BuzzerNoteDuration = u32;
+#[derive(Clone, Copy, Debug, defmt::Format, PartialEq)]
+pub enum BuzzerNote {
+    Rest(BuzzerNoteDuration),
+    Sound(Rate, BuzzerNoteDuration),
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct NoteData (pub f64, pub i16);
+pub enum MusicNote {
+    Rest(MusicNoteDuration),
+    Sound(MusicNoteHertz, MusicNoteDuration),
+}
 
-impl NoteData {
-    pub fn to_note(&self, whole_note: u32) -> Note {
-        let Self(freq_hz, divider) = self;
-        let duration_ms = { 
-            if *divider > 0 {
-                whole_note / *divider as u32
-            } else {
-                let duration = whole_note / divider.unsigned_abs() as u32;
-                (duration as f64 * 1.5) as u32
-            }
-        } as u64;
-        let frequency = Rate::from_hz(*freq_hz as u32);
-        Note { frequency, duration_ms }
+impl MusicNote {
+
+    fn duration_ms(divider: &MusicNoteDuration, whole_note: &u32) -> u32 { 
+        if *divider > 0 {
+            whole_note / *divider as u32
+        } else {
+            let duration = whole_note / divider.unsigned_abs() as u32;
+            (duration as f64 * 1.5) as u32
+        }
+    }
+
+    pub fn to_buzzer_note(&self, whole_note: &u32) -> BuzzerNote {
+        match self {
+            MusicNote::Rest(d) => {
+                BuzzerNote::Rest(Self::duration_ms(d, whole_note))
+            },
+            MusicNote::Sound(freq_hz, d) => {
+                let rate = Rate::from_hz(*freq_hz as u32);
+                let duration_ms = Self::duration_ms(d, whole_note);
+                BuzzerNote::Sound(rate, duration_ms)
+            },
+        }
     }
 }
 
-#[derive(Clone, Copy, Debug, defmt::Format)]
+
+impl Into<MusicNote> for (MusicNoteHertz, MusicNoteDuration) {
+    fn into(self) -> MusicNote {
+        let (hertz, duration) = self;
+        if hertz == REST {
+            MusicNote::Rest(duration)
+        } else {
+            MusicNote::Sound(hertz, duration)
+        }
+    }
+}
+
+
+
+
+#[derive(Clone, Copy, Debug, defmt::Format, PartialEq)]
 pub struct Note {
     pub frequency: Rate, 
     pub duration_ms: u64,
-}
-
-#[derive(Debug, Error)]
-pub enum BuzzerError {
-    TimerError(#[from] LedcTimerError),
-    ChannelError(#[from] LedcChannelError),
-    NoSong,
-}
-
-#[derive(Debug, defmt::Format, Default, PartialEq, Clone)]
-pub enum BuzzerState<'a> {
-    #[default] 
-    Stopped,
-    Paused(Song<'a>),
-    Playing(Song<'a>),
-}
-
-impl<'a> BuzzerState<'a> {
-    // async fn execute(self, rx: Receiver<'static, CriticalSectionRawMutex, BuzzerCommand<'static>, 3>) -> Self {
-    async fn execute(self, rx: DynamicReceiver<'a, BuzzerCommand<'a>>) -> Self {
-        let state = self;
-        let cmd = rx.receive().await;
-        info!("recieved cmd {}", cmd);
-        match (state, cmd) {
-            (BuzzerState::Stopped, BuzzerCommand::Play(song)) => BuzzerState::Playing(song),
-            (BuzzerState::Paused(song), BuzzerCommand::Resume) => BuzzerState::Playing(song),
-            (BuzzerState::Paused(_), BuzzerCommand::Play(song)) => BuzzerState::Playing(song),
-            (BuzzerState::Playing(song), BuzzerCommand::Pause) => BuzzerState::Paused(song),
-            (BuzzerState::Playing(_), BuzzerCommand::Play(song)) => BuzzerState::Playing(song),
-            (BuzzerState::Stopped, BuzzerCommand::Pause) => BuzzerState::Stopped,
-            (BuzzerState::Stopped, BuzzerCommand::Resume) => BuzzerState::Stopped,
-            (BuzzerState::Paused(song), BuzzerCommand::Pause) => BuzzerState::Paused(song),
-            (BuzzerState::Playing(song), BuzzerCommand::Resume) => BuzzerState::Playing(song),
-        }
-
-        // match rx.try_receive() {
-        //     Ok(cmd) => {
-        //         info!("recieved cmd {}", cmd);
-        //         match (state, cmd) {
-        //             (BuzzerState::Stopped, BuzzerCommand::Play(song)) => BuzzerState::Playing(song),
-        //             (BuzzerState::Paused(song), BuzzerCommand::Resume) => BuzzerState::Playing(song),
-        //             (BuzzerState::Paused(_), BuzzerCommand::Play(song)) => BuzzerState::Playing(song),
-        //             (BuzzerState::Playing(song), BuzzerCommand::Pause) => BuzzerState::Paused(song),
-        //             (BuzzerState::Playing(_), BuzzerCommand::Play(song)) => BuzzerState::Playing(song),
-        //             (BuzzerState::Stopped, BuzzerCommand::Pause) => BuzzerState::Stopped,
-        //             (BuzzerState::Stopped, BuzzerCommand::Resume) => BuzzerState::Stopped,
-        //             (BuzzerState::Paused(song), BuzzerCommand::Pause) => BuzzerState::Paused(song),
-        //             (BuzzerState::Playing(song), BuzzerCommand::Resume) => BuzzerState::Playing(song),
-        //         }
-        //     },
-        //     Err(e) => {
-        //         error!("receive error: {}", e);
-        //         Timer::after(Duration::from_millis(100)).await;
-        //         state.clone()
-        //     },
-        // }
-     }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum BuzzerCommand<'a> {
-    Pause,
-    Resume,
-    Play(Song<'a>),
-}
-
-impl<'a> Format for BuzzerCommand<'a> {
-    fn format(&self, fmt: defmt::Formatter) {
-        match self {
-            BuzzerCommand::Pause => defmt::write!(fmt, "Pause"),
-            BuzzerCommand::Resume => defmt::write!(fmt, "Resume"),
-            BuzzerCommand::Play(_song) => defmt::write!(fmt, "Play"),
-        }
-        todo!()
-    }
-}
-
-
-pub struct Buzzer<'a> {
-    ledc: Ledc<'static>, 
-    pin: esp_hal::peripherals::GPIO2<'static>,
-    rx: DynamicReceiver<'a, BuzzerCommand<'a>>,
-    // rx: Receiver<'static, CriticalSectionRawMutex, BuzzerCommand<'static>, 3>,
-    pub state: BuzzerState<'a>,
-}
-
-
-impl<'a> Buzzer<'a> {
-    pub fn new(ledc: Ledc<'static>, pin: esp_hal::peripherals::GPIO2<'static> , rx: DynamicReceiver<'a, BuzzerCommand<'a>>) -> Self {
-        Self { ledc, pin, rx, state: BuzzerState::default() }
-    }
-    async fn alternate_play_note(&self, note: Note) -> Result<(), BuzzerError>{
-        let mut hstim = self.ledc.timer::<HighSpeed>(timer::Number::Timer0);
-        hstim
-            .configure(timer::config::Config {
-                duty: timer::config::Duty::Duty10Bit,
-                clock_source: timer::HSClockSource::APBClk,
-                frequency: note.frequency,
-            })?;
-
-        let mut channel0 = self.ledc.channel(channel::Number::Channel0, unsafe { self.pin.clone_unchecked() });
-        channel0
-            .configure(channel::config::Config {
-                timer: &hstim,
-                duty_pct: 50,
-                pin_config: channel::config::PinConfig::PushPull,
-            })?;
-        let pause_duration = note.duration_ms / 10; // 10% of duration_ms
-
-        Timer::after(Duration::from_millis(note.duration_ms - pause_duration)).await;
-        channel0.set_duty(0)?;
-        Timer::after(Duration::from_millis(pause_duration)).await;
-
-        Ok(())
-    }
-
-    pub async fn execute(&self, mut state: BuzzerState<'a>) -> BuzzerState<'a>{
-        let rx = self.rx;
-        state = match state {
-            BuzzerState::Playing(mut song) => {
-                match song.next_note() {
-                    Some(note) => {
-                        if let Err(_e) = self.alternate_play_note(note).await {
-                            error!("problem playing note");
-                            BuzzerState::Stopped
-                        } else {
-                            BuzzerState::Playing(song)
-                        }
-                    },
-                    None => BuzzerState::Stopped,
-                }
-            },
-            BuzzerState::Stopped => BuzzerState::Stopped,
-            BuzzerState::Paused(song) => BuzzerState::Paused(song),
-        };
-        state.execute(rx).await
-    }
-
 }
 
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Song<'s> {
     whole_note: u32,
-    pub notes: Vec<NoteData>,
+    pub notes: Vec<MusicNote>,
     index: usize,
-    _phantom: PhantomData<&'s NoteData>,
+    _phantom: PhantomData<&'s MusicNote>,    
 }
 
 
 impl Song<'_> {
-    pub fn new(tempo: u16, some_notes: &[NoteData]) -> Self {
+    pub fn new(tempo: u16, some_notes: &[MusicNote]) -> Self {
         let whole_note = (60_000 * 4) / tempo as u32;
-        let notes: Vec<NoteData> = some_notes.into();
+        let notes: Vec<MusicNote> = some_notes.into();
         Self { whole_note, notes, _phantom: PhantomData, index: 0 }
     }
     
-    fn create_note(&self, note: &NoteData) -> Note {
-        note.to_note(self.whole_note)
-    }
+    // fn create_note(&self, note: &MusicNote) -> Note {
+    //     note.to_note(self.whole_note)
+    // }
 
-    pub fn next_note(&mut self) -> Option<Note> {
-        let index = self.index;
-        if let Some(n) = self.notes.get(index) {
-            self.index = index + 1;
-            Some(self.create_note(n))
-        } else {
-            None
+    // pub fn next_note(&mut self) -> Option<Note> {
+    //     let index = self.index;
+    //     if let Some(n) = self.notes.get(index) {
+    //         self.index = index + 1;
+    //         Some(self.create_note(n))
+    //     } else {
+    //         None
+    //     }
+    // }
+
+    pub async fn play<'a>(&mut self, tx: BuzzerSender<'a>) {
+        let mut note_iter = self.notes.iter();
+        while let Some(note) = note_iter.next() {
+            let buz_note = note.to_buzzer_note(&self.whole_note);
+            let duration_ms = match buz_note {
+                BuzzerNote::Rest(duration_ms) => duration_ms,
+                BuzzerNote::Sound(rate, duration_ms) => {
+                    tx.send(BuzzerCommand::Play(Note { frequency: rate, duration_ms: duration_ms as u64 })).await;
+                    duration_ms
+                },
+            } as u64;
+            Timer::after(Duration::from_millis(duration_ms)).await;
         }
     }
 
-    pub fn calc_note_duration(&self, divider: i16) -> u32 {
-        if divider > 0 {
-            self.whole_note / divider as u32
-        } else {
-            let duration = self.whole_note / divider.unsigned_abs() as u32;
-            (duration as f64 * 1.5) as u32
-        }
-    }
+    // pub async fn play<'a>(&mut self, tx: BuzzerSender<'a>) {
+    //     while let Some(note) = self.next_note() {
+    //         if note.frequency == 
+    //         tx.send(BuzzerCommand::Play(note)).await;
+    //         Timer::after(Duration::from_millis(note.duration_ms)).await
+    //     }
+    // }
 }
 
+#[embassy_executor::task(pool_size = 4)]
+pub async fn play_a_song(mut song: Song<'static>, tx: BuzzerSender<'static>) {
+    song.play(tx).await
+}

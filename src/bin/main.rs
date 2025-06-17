@@ -21,7 +21,7 @@ use mpu6886::Mpu6886;
 use pcf8563::Pcf8563;
 
 use static_cell::StaticCell;
-use watchy_m5::music::{Buzzer, BuzzerCommand, BuzzerState};
+use watchy_m5::{buzzer::{Buzzer, BuzzerChannel, BuzzerCommand, BuzzerState}, music::{play_a_song, Song}, pink_panther};
 
 use embassy_sync::{
     blocking_mutex::{raw::CriticalSectionRawMutex, CriticalSectionMutex}, 
@@ -43,11 +43,9 @@ use embedded_graphics::{
     text::Text,
 };
 
-// use crossbeam_channel::bounded;
 
 extern crate alloc;
 
-type BuzChannel<'a> = Channel::<CriticalSectionRawMutex, BuzzerCommand<'a>, 3>;
 
 /// Constants used on this stick
 const DISPLAY_WIDTH: u16 = 135;
@@ -61,24 +59,19 @@ static BUTTON_B: CriticalSectionMutex<RefCell<Option<Input>>> = CriticalSectionM
 static BUTTON_C: CriticalSectionMutex<RefCell<Option<Input>>> = CriticalSectionMutex::new(RefCell::new(None));
 
 
-// Setup channels
-// static  SOUND_CHANNEL: Channel::<CriticalSectionRawMutex, BuzzerCommand, 3> = Channel::new();
-// static  SOUND_CHANNEL: Channel::<NoopRawMutex, BuzzerCommand, 3> = Channel::new();
-
 #[embassy_executor::task(pool_size = 4)]
-async fn run(tx: embassy_sync::channel::DynamicSender<'static, BuzzerCommand<'static>>) {
+async fn run() {
     loop {
         info!("Hello world from embassy using esp-hal-async!");
         Timer::after(Duration::from_millis(1_000)).await;
-        match tx.try_send(BuzzerCommand::Pause) {
-            Ok(_) => {
-                info!("sending a message!");
-                continue;
-            },
-            Err(e) => {
-                error!("trouble sending: {}", e);
-            },
-        }
+    }
+}
+
+#[embassy_executor::task(pool_size = 4)]
+async fn run_rx(rx: embassy_sync::channel::DynamicReceiver<'static, u32>) {
+    loop {
+        let m = rx.receive().await;
+        info!("received: {}", m);
     }
 }
 
@@ -102,23 +95,23 @@ async fn main(spawner: Spawner) {
     esp_alloc::heap_allocator!(size: 72 * 1024);
 
     let timg1 = TimerGroup::new(peripherals.TIMG1);
-    let timer0: AnyTimer = timg1.timer0.into();
-    let timer1: AnyTimer = timg1.timer1.into();
-    esp_hal_embassy::init([timer0, timer1]);
-
+    // let timer0: AnyTimer = timg1.timer0.into();
+    // let timer1: AnyTimer = timg1.timer1.into();
+    // esp_hal_embassy::init([timer0, timer1]);
+    esp_hal_embassy::init(timg1.timer0);
     info!("Embassy initialized!");
 
-    static SND_CHANNEL: StaticCell<BuzChannel> = StaticCell::new();
+    static SND_CHANNEL: StaticCell<BuzzerChannel> = StaticCell::new();
     let snd_channel = &*SND_CHANNEL.init(Channel::new());
     
 
-    let timer1 = TimerGroup::new(peripherals.TIMG0);
-    let _init = esp_wifi::init(
-        timer1.timer0,
-        esp_hal::rng::Rng::new(peripherals.RNG),
-        peripherals.RADIO_CLK,
-    )
-    .unwrap();
+    // let timer1 = TimerGroup::new(peripherals.TIMG0);
+    // let _init = esp_wifi::init(
+    //     timer1.timer0,
+    //     esp_hal::rng::Rng::new(peripherals.RNG),
+    //     peripherals.RADIO_CLK,
+    // )
+    // .unwrap();
 
     let mut io = Io::new(peripherals.IO_MUX);
     // Set the interrupt handler for GPIO interrupts.
@@ -253,15 +246,22 @@ async fn main(spawner: Spawner) {
     let buzzer = Buzzer::new(ledc, buzzer_pin, snd_rx);
 
     // TODO: Spawn some tasks
+    // if let Err(e) = spawner.spawn(run_rx(snd_rx)) {
+    //     error!("unable to spawn sound_task: {}", e);
+    // }
     if let Err(e) = spawner.spawn(sound_task(buzzer)) {
         error!("unable to spawn sound_task: {}", e);
     }
-    if let Err(e) = spawner.spawn(run(snd_tx)) {
+    if let Err(e) = spawner.spawn(run()) {
         error!("unable to spawn run_task: {}", e);
     }
 
 
-    // let ppsong = Song::new(pink_panther::TEMPO, &pink_panther::MELODY);
+    let ppsong = Song::new(pink_panther::TEMPO, &pink_panther::MELODY);
+    if let Err(e) = spawner.spawn(play_a_song(ppsong, snd_tx)) {
+        error!("unable to spawn song task: {}", e);
+    }
+
     // snd_tx.send(BuzzerCommand::Play(ppsong)).await;
 
     let mut counter = 0;

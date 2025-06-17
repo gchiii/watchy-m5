@@ -14,17 +14,17 @@ use esp_hal::{
     i2c::master::{BusTimeout, Config as I2cConfig, I2c}, 
     ledc::Ledc, 
     ram, 
-    spi::{master::{Config, Spi}, Mode}, time::Rate, timer::{timg::TimerGroup, AnyTimer}
+    spi::{master::{Config, Spi}, Mode}, time::Rate, timer::timg::TimerGroup
 };
     
 use mpu6886::Mpu6886;
 use pcf8563::Pcf8563;
 
 use static_cell::StaticCell;
-use watchy_m5::{buzzer::{Buzzer, BuzzerChannel, BuzzerCommand, BuzzerState}, music::{play_a_song, Song}, pink_panther};
+use watchy_m5::{buzzer::{Buzzer, BuzzerChannel, BuzzerState}, music::{play_a_song, Song}, pink_panther};
 
 use embassy_sync::{
-    blocking_mutex::{raw::CriticalSectionRawMutex, CriticalSectionMutex}, 
+    blocking_mutex::CriticalSectionMutex, 
     channel::Channel, 
 };
 

@@ -4,14 +4,9 @@ use {esp_backtrace as _, esp_println as _};
 
 use core::marker::PhantomData;
 
-use thiserror_no_std::Error;
 use allocator_api2::vec::Vec;
-use defmt::{error, info, Format};
-use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::{DynamicReceiver, Receiver, TryReceiveError}};
 use embassy_time::{Duration, Timer};
-use esp_hal::{ledc::{channel::{self, ChannelIFace}, timer::{self, TimerIFace}, HighSpeed, Ledc}, time::Rate};
-use esp_hal::ledc::channel::Error as LedcChannelError;
-use esp_hal::ledc::timer::Error as LedcTimerError;
+use esp_hal::time::Rate;
 
 #[allow(unused)]
 // Note frequencies in Hertz as f64
@@ -170,9 +165,9 @@ impl MusicNote {
 }
 
 
-impl Into<MusicNote> for (MusicNoteHertz, MusicNoteDuration) {
-    fn into(self) -> MusicNote {
-        let (hertz, duration) = self;
+impl From<(MusicNoteHertz, MusicNoteDuration)> for MusicNote {
+    fn from(val: (MusicNoteHertz, MusicNoteDuration)) -> Self {
+        let (hertz, duration) = val;
         if hertz == REST {
             MusicNote::Rest(duration)
         } else {
@@ -221,9 +216,9 @@ impl Song<'_> {
     //     }
     // }
 
-    pub async fn play<'a>(&mut self, tx: BuzzerSender<'a>) {
-        let mut note_iter = self.notes.iter();
-        while let Some(note) = note_iter.next() {
+    pub async fn play(&mut self, tx: BuzzerSender<'_>) {
+        let note_iter = self.notes.iter();
+        for note in note_iter {
             let buz_note = note.to_buzzer_note(&self.whole_note);
             let duration_ms = match buz_note {
                 BuzzerNote::Rest(duration_ms) => duration_ms,

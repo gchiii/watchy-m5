@@ -7,7 +7,7 @@ use thiserror_no_std::Error;
 use defmt::{error, info, Format};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::{Channel, DynamicReceiver}};
 use embassy_time::{Duration, Timer};
-use esp_hal::{ledc::{channel::{self, ChannelIFace}, timer::{self, TimerIFace}, HighSpeed, Ledc}, time::Rate};
+use esp_hal::ledc::{channel::{self, ChannelIFace}, timer::{self, TimerIFace}, HighSpeed, Ledc};
 use esp_hal::ledc::channel::Error as LedcChannelError;
 use esp_hal::ledc::timer::Error as LedcTimerError;
 
@@ -53,7 +53,7 @@ pub enum BuzzerState {
 
 impl BuzzerState {
     // async fn execute(self, rx: Receiver<'static, CriticalSectionRawMutex, BuzzerCommand<'static>, 3>) -> Self {
-    async fn execute<'a>(self, rx: DynamicReceiver<'a, BuzzerCommand>) -> Self {
+    async fn execute(self, rx: DynamicReceiver<'_, BuzzerCommand>) -> Self {
         let state = self;
         let cmd = rx.receive().await;
         info!("recieved cmd {}", cmd);

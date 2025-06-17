@@ -1,9 +1,11 @@
+use {esp_backtrace as _, esp_println as _};
+
 use core::marker::PhantomData;
 
 use thiserror_no_std::Error;
 use allocator_api2::vec::Vec;
-use defmt::error;
-use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Receiver};
+use defmt::{error, info, Format};
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::{DynamicReceiver, Receiver, TryReceiveError}};
 use embassy_time::{Duration, Timer};
 use esp_hal::{ledc::{channel::{self, ChannelIFace}, timer::{self, TimerIFace}, HighSpeed, Ledc}, time::Rate};
 use esp_hal::ledc::channel::Error as LedcChannelError;
@@ -166,10 +168,13 @@ pub enum BuzzerState<'a> {
     Playing(Song<'a>),
 }
 
-impl BuzzerState<'_> {
-    async fn execute(self, rx: Receiver<'static, CriticalSectionRawMutex, BuzzerCommand<'static>, 3>) -> Self {
+impl<'a> BuzzerState<'a> {
+    // async fn execute(self, rx: Receiver<'static, CriticalSectionRawMutex, BuzzerCommand<'static>, 3>) -> Self {
+    async fn execute(self, rx: DynamicReceiver<'a, BuzzerCommand<'a>>) -> Self {
         let state = self;
-        match (state, rx.receive().await) {
+        let cmd = rx.receive().await;
+        info!("recieved cmd {}", cmd);
+        match (state, cmd) {
             (BuzzerState::Stopped, BuzzerCommand::Play(song)) => BuzzerState::Playing(song),
             (BuzzerState::Paused(song), BuzzerCommand::Resume) => BuzzerState::Playing(song),
             (BuzzerState::Paused(_), BuzzerCommand::Play(song)) => BuzzerState::Playing(song),
@@ -180,27 +185,61 @@ impl BuzzerState<'_> {
             (BuzzerState::Paused(song), BuzzerCommand::Pause) => BuzzerState::Paused(song),
             (BuzzerState::Playing(song), BuzzerCommand::Resume) => BuzzerState::Playing(song),
         }
-    }
+
+        // match rx.try_receive() {
+        //     Ok(cmd) => {
+        //         info!("recieved cmd {}", cmd);
+        //         match (state, cmd) {
+        //             (BuzzerState::Stopped, BuzzerCommand::Play(song)) => BuzzerState::Playing(song),
+        //             (BuzzerState::Paused(song), BuzzerCommand::Resume) => BuzzerState::Playing(song),
+        //             (BuzzerState::Paused(_), BuzzerCommand::Play(song)) => BuzzerState::Playing(song),
+        //             (BuzzerState::Playing(song), BuzzerCommand::Pause) => BuzzerState::Paused(song),
+        //             (BuzzerState::Playing(_), BuzzerCommand::Play(song)) => BuzzerState::Playing(song),
+        //             (BuzzerState::Stopped, BuzzerCommand::Pause) => BuzzerState::Stopped,
+        //             (BuzzerState::Stopped, BuzzerCommand::Resume) => BuzzerState::Stopped,
+        //             (BuzzerState::Paused(song), BuzzerCommand::Pause) => BuzzerState::Paused(song),
+        //             (BuzzerState::Playing(song), BuzzerCommand::Resume) => BuzzerState::Playing(song),
+        //         }
+        //     },
+        //     Err(e) => {
+        //         error!("receive error: {}", e);
+        //         Timer::after(Duration::from_millis(100)).await;
+        //         state.clone()
+        //     },
+        // }
+     }
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum BuzzerCommand<'a> {
     Pause,
     Resume,
     Play(Song<'a>),
 }
 
+impl<'a> Format for BuzzerCommand<'a> {
+    fn format(&self, fmt: defmt::Formatter) {
+        match self {
+            BuzzerCommand::Pause => defmt::write!(fmt, "Pause"),
+            BuzzerCommand::Resume => defmt::write!(fmt, "Resume"),
+            BuzzerCommand::Play(_song) => defmt::write!(fmt, "Play"),
+        }
+        todo!()
+    }
+}
+
 
 pub struct Buzzer<'a> {
     ledc: Ledc<'static>, 
     pin: esp_hal::peripherals::GPIO2<'static>,
-    rx: Receiver<'static, CriticalSectionRawMutex, BuzzerCommand<'static>, 3>,
+    rx: DynamicReceiver<'a, BuzzerCommand<'a>>,
+    // rx: Receiver<'static, CriticalSectionRawMutex, BuzzerCommand<'static>, 3>,
     pub state: BuzzerState<'a>,
 }
 
 
 impl<'a> Buzzer<'a> {
-    pub fn new(ledc: Ledc<'static>, pin: esp_hal::peripherals::GPIO2<'static> , rx: Receiver<'static, CriticalSectionRawMutex, BuzzerCommand, 3>) -> Self {
+    pub fn new(ledc: Ledc<'static>, pin: esp_hal::peripherals::GPIO2<'static> , rx: DynamicReceiver<'a, BuzzerCommand<'a>>) -> Self {
         Self { ledc, pin, rx, state: BuzzerState::default() }
     }
     async fn alternate_play_note(&self, note: Note) -> Result<(), BuzzerError>{

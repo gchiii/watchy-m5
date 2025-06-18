@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 
+use critical_section::Mutex;
 use defmt::{error, info};
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
@@ -21,10 +22,10 @@ use mpu6886::Mpu6886;
 use pcf8563::Pcf8563;
 
 use static_cell::StaticCell;
-use watchy_m5::{buzzer::{Buzzer, BuzzerChannel, BuzzerState}, music::{play_a_song, Song}, pink_panther};
+use watchy_m5::{buzzer::{Buzzer, BuzzerChannel, BuzzerState}, music::{player_task, PlayerChannel, PlayerCmd, PlayerReceiver, PlayerSend, PlayerSender, Song}, pink_panther};
 
 use embassy_sync::{
-    blocking_mutex::CriticalSectionMutex, 
+    blocking_mutex::{raw::CriticalSectionRawMutex, CriticalSectionMutex}, 
     channel::Channel, 
 };
 
@@ -59,6 +60,9 @@ static BUTTON_B: CriticalSectionMutex<RefCell<Option<Input>>> = CriticalSectionM
 static BUTTON_C: CriticalSectionMutex<RefCell<Option<Input>>> = CriticalSectionMutex::new(RefCell::new(None));
 
 
+static PLAYER_SEND: CriticalSectionMutex<RefCell<Option< PlayerSend<'static> >>> = CriticalSectionMutex::new(RefCell::new(None));
+static PLAYER_CHANNEL: Mutex<RefCell<Option<PlayerChannel>>> = Mutex::new(RefCell::new(None));
+
 #[embassy_executor::task(pool_size = 4)]
 async fn run() {
     loop {
@@ -77,7 +81,7 @@ async fn run_rx(rx: embassy_sync::channel::DynamicReceiver<'static, u32>) {
 
 
 #[embassy_executor::task(pool_size = 4)]
-async fn sound_task(buzzer: Buzzer<'static>) {
+async fn sound_task(mut buzzer: Buzzer<'static>) {
     let mut buzzer_state = BuzzerState::default();
     loop {
         buzzer_state = buzzer.execute(buzzer_state).await;
@@ -158,6 +162,12 @@ async fn main(spawner: Spawner) {
         }
     }
 
+    // static PLAYER_CHANNEL: StaticCell<PlayerChannel> = StaticCell::new();
+    // let player_channel = &*PLAYER_CHANNEL.init(Channel::new());
+    static player_channel: PlayerChannel = Channel::new();
+    // let player_tx = player_channel.dyn_sender();
+    // let player_rx = player_channel.dyn_receiver();
+
     // Set GPIO37 as an input
     let mut button_a = Input::new(peripherals.GPIO37, InputConfig::default());
     // Set GPIO39 as an input
@@ -166,13 +176,18 @@ async fn main(spawner: Spawner) {
     let mut button_c = Input::new(peripherals.GPIO35, InputConfig::default());
 
     // ANCHOR: critical_section
-    critical_section::with(|cs| {
+    let player_rx = critical_section::with(|cs| {
+        let player_tx: PlayerSend<'static> = player_channel.sender();
+        let player_rx: PlayerReceiver<'static> = player_channel.receiver();
+        // let player_rx: PlayerReceiver = player_channel.dyn_receiver();
+        PLAYER_SEND.borrow(cs).replace(Some(player_tx));
         button_a.listen(Event::FallingEdge);
         BUTTON_A.borrow(cs).replace(Some(button_a));
         button_b.listen(Event::FallingEdge);
         BUTTON_B.borrow(cs).replace(Some(button_b));
         button_c.listen(Event::FallingEdge);
         BUTTON_C.borrow(cs).replace(Some(button_c));
+        player_rx
     });
     // ANCHOR_END: critical_section
 
@@ -256,13 +271,26 @@ async fn main(spawner: Spawner) {
         error!("unable to spawn run_task: {}", e);
     }
 
+    
+    
+ 
+    static CURRENT_SONG: StaticCell<Song> = StaticCell::new();
+    let a_song = Song::new(pink_panther::TEMPO, &pink_panther::MELODY);    
+    let ppsong: &'static mut Song = CURRENT_SONG.init( a_song );
 
-    let ppsong = Song::new(pink_panther::TEMPO, &pink_panther::MELODY);
-    if let Err(e) = spawner.spawn(play_a_song(ppsong, snd_tx)) {
+    if let Err(e) = spawner.spawn(player_task(player_rx, snd_tx)) {
         error!("unable to spawn song task: {}", e);
     }
 
-    // snd_tx.send(BuzzerCommand::Play(ppsong)).await;
+    critical_section::with(|cs| {
+        if let Some(player_tx) = PLAYER_SEND.borrow(cs).borrow_mut().as_mut() {
+            if let Err(e) = player_tx.try_send(watchy_m5::music::PlayerCmd::LoadSong(ppsong)) {
+                error!("oops: {}", e);
+            }
+        }
+    });
+    // player_tx.send(watchy_m5::music::PlayerCmd::LoadSong(ppsong)).await;
+    // // snd_tx.send(BuzzerCommand::Play(ppsong)).await;
 
     let mut counter = 0;
     loop {
@@ -311,6 +339,11 @@ async fn main(spawner: Spawner) {
 fn handler() {
     critical_section::with(|cs| {
         info!("GPIO interrupt");
+        if let Some(player_tx) = PLAYER_SEND.borrow(cs).borrow_mut().as_mut() {
+            if let Err(e) = player_tx.try_send(PlayerCmd::Play) {
+                error!("oops: {}", e);
+            }
+        }
         // if let Some(button_a) = BUTTON_A.borrow(cs).borrow_mut() {
         if let Some(button_a) = BUTTON_A.borrow(cs).borrow_mut().as_mut() {
             if button_a.is_interrupt_set() {

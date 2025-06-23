@@ -1,7 +1,6 @@
 #![no_std]
 #![no_main]
 
-use critical_section::Mutex;
 use defmt::{error, info};
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
@@ -10,7 +9,7 @@ use embedded_hal_bus::i2c::RefCellDevice;
 
 use esp_hal::{
     clock::CpuClock, 
-    gpio::{Event, Input, InputConfig, Io, Level, Output, OutputConfig}, 
+    gpio::{Input, InputConfig, Io, Level, Output, OutputConfig}, 
     handler, 
     i2c::master::{BusTimeout, Config as I2cConfig, I2c}, 
     ledc::Ledc, 
@@ -22,10 +21,10 @@ use mpu6886::Mpu6886;
 use pcf8563::Pcf8563;
 
 use static_cell::StaticCell;
-use watchy_m5::{buzzer::{Buzzer, BuzzerChannel, BuzzerState}, music::{player_task, PlayerChannel, PlayerCmd, PlayerReceiver, PlayerSend, PlayerSender, Song}, pink_panther};
+use watchy_m5::{buttons::{btn_task, ButtonInputCollection, ButtonError, ButtonReader, ButtonReaderCollection, A_CHAN, B_CHAN, C_CHAN, INPUT_BUTTONS}, buzzer::{Buzzer, BuzzerChannel, BuzzerState}, music::{player_task, PlayerChannel, PlayerReceiver, PlayerSender, Song}, pink_panther};
 
 use embassy_sync::{
-    blocking_mutex::{raw::CriticalSectionRawMutex, CriticalSectionMutex}, 
+    blocking_mutex::CriticalSectionMutex, 
     channel::Channel, 
 };
 
@@ -52,16 +51,12 @@ extern crate alloc;
 const DISPLAY_WIDTH: u16 = 135;
 const DISPLAY_HEIGHT: u16 = 240;
 
-// static BUTTON_A: csMutex<RefCell<Option<Input>>> = csMutex::new(RefCell::new(None));
-// static BUTTON_B: csMutex<RefCell<Option<Input>>> = csMutex::new(RefCell::new(None));
-// static BUTTON_C: csMutex<RefCell<Option<Input>>> = csMutex::new(RefCell::new(None));
-static BUTTON_A: CriticalSectionMutex<RefCell<Option<Input>>> = CriticalSectionMutex::new(RefCell::new(None));
-static BUTTON_B: CriticalSectionMutex<RefCell<Option<Input>>> = CriticalSectionMutex::new(RefCell::new(None));
-static BUTTON_C: CriticalSectionMutex<RefCell<Option<Input>>> = CriticalSectionMutex::new(RefCell::new(None));
+// static BUTTON_A: CriticalSectionMutex<RefCell<Option<Input>>> = CriticalSectionMutex::new(RefCell::new(None));
+// static BUTTON_B: CriticalSectionMutex<RefCell<Option<Input>>> = CriticalSectionMutex::new(RefCell::new(None));
+// static BUTTON_C: CriticalSectionMutex<RefCell<Option<Input>>> = CriticalSectionMutex::new(RefCell::new(None));
 
 
-static PLAYER_SEND: CriticalSectionMutex<RefCell<Option< PlayerSend<'static> >>> = CriticalSectionMutex::new(RefCell::new(None));
-static PLAYER_CHANNEL: Mutex<RefCell<Option<PlayerChannel>>> = Mutex::new(RefCell::new(None));
+static PLAYER_SEND: CriticalSectionMutex<RefCell<Option< PlayerSender<'static> >>> = CriticalSectionMutex::new(RefCell::new(None));
 
 #[embassy_executor::task(pool_size = 4)]
 async fn run() {
@@ -87,6 +82,29 @@ async fn sound_task(mut buzzer: Buzzer<'static>) {
         buzzer_state = buzzer.execute(buzzer_state).await;
     }
 }
+
+
+pub fn setup_buttons_stuf(button_a: Input<'static>, button_b: Input<'static>, button_c: Input<'static>) -> Result<ButtonReaderCollection<'static>, ButtonError> {
+    let btn_inputs = ButtonInputCollection::new(button_a, button_b, button_c)?;
+
+    let a_sub = A_CHAN.subscriber()?;
+    let btn_reader_a = ButtonReader::new(a_sub, "btn_a");
+    let b_sub = B_CHAN.subscriber()?;
+    let btn_reader_b = ButtonReader::new(b_sub, "btn_b");
+    let c_sub = C_CHAN.subscriber()?;
+    let btn_reader_c = ButtonReader::new(c_sub, "btn_c");
+
+
+    let btn_readers: ButtonReaderCollection<'static> = ButtonReaderCollection::new(btn_reader_a, btn_reader_b, btn_reader_c);
+
+    critical_section::with(|cs| {
+        INPUT_BUTTONS.borrow(cs).replace(Some(btn_inputs));
+
+    });
+
+    Ok(btn_readers)
+}
+
 
 
 #[esp_hal_embassy::main]
@@ -162,31 +180,22 @@ async fn main(spawner: Spawner) {
         }
     }
 
-    // static PLAYER_CHANNEL: StaticCell<PlayerChannel> = StaticCell::new();
-    // let player_channel = &*PLAYER_CHANNEL.init(Channel::new());
-    static player_channel: PlayerChannel = Channel::new();
-    // let player_tx = player_channel.dyn_sender();
-    // let player_rx = player_channel.dyn_receiver();
+    static PLAYER_CHANNEL: PlayerChannel = Channel::new();
 
     // Set GPIO37 as an input
-    let mut button_a = Input::new(peripherals.GPIO37, InputConfig::default());
+    let button_a: Input<'_> = Input::new(peripherals.GPIO37, InputConfig::default());
     // Set GPIO39 as an input
-    let mut button_b = Input::new(peripherals.GPIO39, InputConfig::default());
+    let button_b = Input::new(peripherals.GPIO39, InputConfig::default());
     // Set GPIO35 as an input
-    let mut button_c = Input::new(peripherals.GPIO35, InputConfig::default());
+    let button_c = Input::new(peripherals.GPIO35, InputConfig::default());
+
 
     // ANCHOR: critical_section
     let player_rx = critical_section::with(|cs| {
-        let player_tx: PlayerSend<'static> = player_channel.sender();
-        let player_rx: PlayerReceiver<'static> = player_channel.receiver();
+        let player_tx: PlayerSender<'static> = PLAYER_CHANNEL.sender();
+        let player_rx: PlayerReceiver<'static> = PLAYER_CHANNEL.receiver();
         // let player_rx: PlayerReceiver = player_channel.dyn_receiver();
         PLAYER_SEND.borrow(cs).replace(Some(player_tx));
-        button_a.listen(Event::FallingEdge);
-        BUTTON_A.borrow(cs).replace(Some(button_a));
-        button_b.listen(Event::FallingEdge);
-        BUTTON_B.borrow(cs).replace(Some(button_b));
-        button_c.listen(Event::FallingEdge);
-        BUTTON_C.borrow(cs).replace(Some(button_c));
         player_rx
     });
     // ANCHOR_END: critical_section
@@ -271,7 +280,12 @@ async fn main(spawner: Spawner) {
         error!("unable to spawn run_task: {}", e);
     }
 
-    
+    if let Ok(btn_reader) = setup_buttons_stuf(button_a, button_b, button_c) {
+        if let Err(e) = spawner.spawn(btn_task(btn_reader)) {
+            error!("unable to spawn run_task: {}", e);
+        }
+
+    }
     
  
     static CURRENT_SONG: StaticCell<Song> = StaticCell::new();
@@ -334,34 +348,20 @@ async fn main(spawner: Spawner) {
 }
 
 
+
+
 #[handler]
 #[ram]
 fn handler() {
     critical_section::with(|cs| {
         info!("GPIO interrupt");
-        if let Some(player_tx) = PLAYER_SEND.borrow(cs).borrow_mut().as_mut() {
-            if let Err(e) = player_tx.try_send(PlayerCmd::Play) {
-                error!("oops: {}", e);
-            }
+        if let Some(all_buttons) = INPUT_BUTTONS.borrow(cs).borrow_mut().as_mut() {
+            all_buttons.interrupt_handler();
         }
-        // if let Some(button_a) = BUTTON_A.borrow(cs).borrow_mut() {
-        if let Some(button_a) = BUTTON_A.borrow(cs).borrow_mut().as_mut() {
-            if button_a.is_interrupt_set() {
-                button_a.clear_interrupt();
-                info!("Button A");
-            }
-        }
-        if let Some(button_b) = BUTTON_B.borrow(cs).borrow_mut().as_mut() {
-            if button_b.is_interrupt_set() {
-                button_b.clear_interrupt();
-                info!("Button B");
-            }
-        }
-        if let Some(button_c) = BUTTON_C.borrow(cs).borrow_mut().as_mut() {
-            if button_c.is_interrupt_set() {
-                button_c.clear_interrupt();
-                info!("Button C");
-            }
-        }
+        // if let Some(player_tx) = PLAYER_SEND.borrow(cs).borrow_mut().as_mut() {
+        //     if let Err(e) = player_tx.try_send(PlayerCmd::Play) {
+        //         error!("oops: {}", e);
+        //     }
+        // }
     });
 }

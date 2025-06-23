@@ -1,11 +1,11 @@
-use crate::music::{BuzzerNote, BuzzerNoteDuration, Note};
+use crate::music::{BuzzerNote, Note};
 
 use {esp_backtrace as _, esp_println as _};
 
 
 use thiserror_no_std::Error;
-use defmt::{error, info, trace, Format};
-use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::{Channel, DynamicReceiver}};
+use defmt::{error, trace};
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
 use embassy_time::{Duration, Timer};
 use esp_hal::{ledc::{channel::{self, ChannelIFace}, timer::{self, TimerIFace}, HighSpeed, Ledc}, time::Rate};
 use esp_hal::ledc::channel::Error as LedcChannelError;

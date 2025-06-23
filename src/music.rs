@@ -5,7 +5,6 @@ use {esp_backtrace as _, esp_println as _};
 use core::marker::PhantomData;
 
 use allocator_api2::vec::Vec;
-use embassy_futures::select;
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
 use embassy_time::{Duration, Timer};
 use esp_hal::time::Rate;
@@ -241,8 +240,7 @@ impl defmt::Format for PlayerCmd {
 
 const PLAYER_CHANNEL_DEPTH: usize = 3;
 pub type PlayerChannel = Channel::<CriticalSectionRawMutex, PlayerCmd, PLAYER_CHANNEL_DEPTH>;
-pub type PlayerSender<'a> = embassy_sync::channel::DynamicSender<'a, PlayerCmd>;
-pub type PlayerSend<'a> = embassy_sync::channel::Sender<'a, CriticalSectionRawMutex, PlayerCmd, PLAYER_CHANNEL_DEPTH>;
+pub type PlayerSender<'a> = embassy_sync::channel::Sender<'a, CriticalSectionRawMutex, PlayerCmd, PLAYER_CHANNEL_DEPTH>;
 pub type PlayerReceiver<'a> = embassy_sync::channel::Receiver<'a, CriticalSectionRawMutex, PlayerCmd, PLAYER_CHANNEL_DEPTH>;
 
 

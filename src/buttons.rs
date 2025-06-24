@@ -32,6 +32,13 @@ pub enum ButtonEvent {
     Long,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, defmt::Format)]
+pub enum InputEvent {
+    ButtonA(ButtonEvent),
+    ButtonB(ButtonEvent),
+    ButtonC(ButtonEvent),
+}
+
 
 #[derive(Debug, Clone, Copy, defmt::Format)]
 pub enum RawButtonEvent {
@@ -93,11 +100,11 @@ impl<'a> InputButton<'a> {
         self.input().clear_interrupt();
         match self.input().level() {
             Level::Low => {
-                info!("{} Down: {}", self.name(), ts);
+                trace!("{} Down: {}", self.name(), ts);
                 RawButtonEvent::Down(ts)
             },
             Level::High => {
-                info!("{} Up: {}", self.name(), ts);
+                trace!("{} Up: {}", self.name(), ts);
                 RawButtonEvent::Up(ts)
             },
         }            
@@ -175,19 +182,22 @@ impl<'a> ButtonReaderCollection<'a> {
         Self { a, b, c }
     }
 
-    pub async fn button_events(&mut self) {
+    pub async fn button_events(&mut self) -> InputEvent {
         let a_events = self.a.get_button_event();
         let b_events = self.b.get_button_event();
         let c_events = self.c.get_button_event();
         match select3(a_events, b_events, c_events).await {
             embassy_futures::select::Either3::First(a) => {
-                info!("Button A: {}", a);
+                trace!("Button A: {}", a);
+                InputEvent::ButtonA(a)
             },
             embassy_futures::select::Either3::Second(b) => {
-                info!("Button B: {}", b);                
+                trace!("Button B: {}", b);
+                InputEvent::ButtonB(b)
             },
             embassy_futures::select::Either3::Third(c) => {
-                info!("Button C: {}", c);                
+                trace!("Button C: {}", c);
+                InputEvent::ButtonC(c)
             },
         }
     }
@@ -197,7 +207,28 @@ impl<'a> ButtonReaderCollection<'a> {
 pub async fn btn_task(btn_reader: ButtonReaderCollection<'static>) {
     let mut btn_readers = btn_reader;
     loop {
-        btn_readers.button_events().await;
+        let input_event = btn_readers.button_events().await;
+        info!("Event: {}", input_event);
+        // match input_event {
+        //     InputEvent::ButtonA(button_event) => {
+        //         match button_event {
+        //             ButtonEvent::Short => todo!(),
+        //             ButtonEvent::Long => todo!(),
+        //         }
+        //     },
+        //     InputEvent::ButtonB(button_event) => {
+        //         match button_event {
+        //             ButtonEvent::Short => todo!(),
+        //             ButtonEvent::Long => todo!(),                    
+        //         }
+        //     },
+        //     InputEvent::ButtonC(button_event) => {
+        //         match button_event {
+        //             ButtonEvent::Short => todo!(),
+        //             ButtonEvent::Long => todo!(),                    
+        //         }
+        //     },
+        // }
     }
 }
 

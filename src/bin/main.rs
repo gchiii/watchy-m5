@@ -21,9 +21,10 @@ use mpu6886::Mpu6886;
 use pcf8563::Pcf8563;
 
 use static_cell::StaticCell;
-use watchy_m5::{buttons::{btn_task, initialize_buttons, INPUT_BUTTONS}, music::PLAYER_SEND};
+use watchy_m5::buttons::{btn_task, initialize_buttons, INPUT_BUTTONS};
 use watchy_m5::buzzer::{Buzzer, BuzzerChannel, BuzzerState};
-use watchy_m5::music::{player_task, PlayerChannel, PlayerReceiver, PlayerSender, Song};
+use watchy_m5::music::Song;
+use watchy_m5::player::{player_task, PlayerChannel, PlayerReceiver, PlayerSender, PlayerCmd, PLAYER_SEND};
 use watchy_m5::pink_panther;
 
 use embassy_sync::
@@ -260,7 +261,7 @@ async fn main(spawner: Spawner) {
 
     critical_section::with(|cs| {
         if let Some(player_tx) = PLAYER_SEND.borrow(cs).borrow_mut().as_mut() {
-            if let Err(e) = player_tx.try_send(watchy_m5::music::PlayerCmd::LoadSong(ppsong)) {
+            if let Err(e) = player_tx.try_send(PlayerCmd::LoadSong(ppsong)) {
                 error!("oops: {}", e);
             }
         }

@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use defmt::{error, info};
+use defmt::{error, info, trace};
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
 use embedded_hal_bus::spi::ExclusiveDevice;
@@ -21,12 +21,14 @@ use mpu6886::Mpu6886;
 use pcf8563::Pcf8563;
 
 use static_cell::StaticCell;
-use watchy_m5::{buttons::{btn_task, ButtonInputCollection, ButtonError, ButtonReader, ButtonReaderCollection, A_CHAN, B_CHAN, C_CHAN, INPUT_BUTTONS}, buzzer::{Buzzer, BuzzerChannel, BuzzerState}, music::{player_task, PlayerChannel, PlayerReceiver, PlayerSender, Song}, pink_panther};
+use watchy_m5::{buttons::{btn_task, initialize_buttons, INPUT_BUTTONS}, music::PLAYER_SEND};
+use watchy_m5::buzzer::{Buzzer, BuzzerChannel, BuzzerState};
+use watchy_m5::music::{player_task, PlayerChannel, PlayerReceiver, PlayerSender, Song};
+use watchy_m5::pink_panther;
 
-use embassy_sync::{
-    blocking_mutex::CriticalSectionMutex, 
-    channel::Channel, 
-};
+use embassy_sync::
+    channel::Channel 
+;
 
 use mipidsi::interface::SpiInterface;
 use mipidsi::models::ST7789;
@@ -51,12 +53,6 @@ extern crate alloc;
 const DISPLAY_WIDTH: u16 = 135;
 const DISPLAY_HEIGHT: u16 = 240;
 
-// static BUTTON_A: CriticalSectionMutex<RefCell<Option<Input>>> = CriticalSectionMutex::new(RefCell::new(None));
-// static BUTTON_B: CriticalSectionMutex<RefCell<Option<Input>>> = CriticalSectionMutex::new(RefCell::new(None));
-// static BUTTON_C: CriticalSectionMutex<RefCell<Option<Input>>> = CriticalSectionMutex::new(RefCell::new(None));
-
-
-static PLAYER_SEND: CriticalSectionMutex<RefCell<Option< PlayerSender<'static> >>> = CriticalSectionMutex::new(RefCell::new(None));
 
 #[embassy_executor::task(pool_size = 4)]
 async fn run() {
@@ -67,42 +63,11 @@ async fn run() {
 }
 
 #[embassy_executor::task(pool_size = 4)]
-async fn run_rx(rx: embassy_sync::channel::DynamicReceiver<'static, u32>) {
-    loop {
-        let m = rx.receive().await;
-        info!("received: {}", m);
-    }
-}
-
-
-#[embassy_executor::task(pool_size = 4)]
 async fn sound_task(mut buzzer: Buzzer<'static>) {
     let mut buzzer_state = BuzzerState::default();
     loop {
         buzzer_state = buzzer.execute(buzzer_state).await;
     }
-}
-
-
-pub fn setup_buttons_stuf(button_a: Input<'static>, button_b: Input<'static>, button_c: Input<'static>) -> Result<ButtonReaderCollection<'static>, ButtonError> {
-    let btn_inputs = ButtonInputCollection::new(button_a, button_b, button_c)?;
-
-    let a_sub = A_CHAN.subscriber()?;
-    let btn_reader_a = ButtonReader::new(a_sub, "btn_a");
-    let b_sub = B_CHAN.subscriber()?;
-    let btn_reader_b = ButtonReader::new(b_sub, "btn_b");
-    let c_sub = C_CHAN.subscriber()?;
-    let btn_reader_c = ButtonReader::new(c_sub, "btn_c");
-
-
-    let btn_readers: ButtonReaderCollection<'static> = ButtonReaderCollection::new(btn_reader_a, btn_reader_b, btn_reader_c);
-
-    critical_section::with(|cs| {
-        INPUT_BUTTONS.borrow(cs).replace(Some(btn_inputs));
-
-    });
-
-    Ok(btn_readers)
 }
 
 
@@ -174,9 +139,9 @@ async fn main(spawner: Spawner) {
     
     if let Ok(pwr_loss) = rtc.power_loss() {
         if pwr_loss {
-            info!("RTC lost power!");
+            trace!("RTC lost power!");
         } else {
-            info!("RTC has kept power.");
+            trace!("RTC has kept power.");
         }
     }
 
@@ -270,9 +235,6 @@ async fn main(spawner: Spawner) {
     let buzzer = Buzzer::new(ledc, buzzer_pin, snd_rx);
 
     // TODO: Spawn some tasks
-    // if let Err(e) = spawner.spawn(run_rx(snd_rx)) {
-    //     error!("unable to spawn sound_task: {}", e);
-    // }
     if let Err(e) = spawner.spawn(sound_task(buzzer)) {
         error!("unable to spawn sound_task: {}", e);
     }
@@ -280,7 +242,7 @@ async fn main(spawner: Spawner) {
         error!("unable to spawn run_task: {}", e);
     }
 
-    if let Ok(btn_reader) = setup_buttons_stuf(button_a, button_b, button_c) {
+    if let Ok(btn_reader) = initialize_buttons(button_a, button_b, button_c) {
         if let Err(e) = spawner.spawn(btn_task(btn_reader)) {
             error!("unable to spawn run_task: {}", e);
         }
@@ -320,7 +282,9 @@ async fn main(spawner: Spawner) {
         led.toggle();
 
         match rtc.datetime() {
-            Ok(dt) => info!("datetime {:02}:{:02}:{:02} ", dt.hour, dt.minute, dt.second),
+            Ok(dt) => {
+                info!("datetime {:02}:{:02}:{:02} ", dt.hour, dt.minute, dt.second);
+            },
             Err(e) => {
                 match e {
                     pcf8563::Error::I2cError(error_kind) => error!("i2c error: {}", error_kind),

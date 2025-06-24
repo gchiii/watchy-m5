@@ -2,10 +2,10 @@ use crate::buzzer::{BuzzerCommand, BuzzerSender};
 
 use {esp_backtrace as _, esp_println as _};
 
-use core::marker::PhantomData;
+use core::{cell::RefCell, marker::PhantomData};
 
 use allocator_api2::vec::Vec;
-use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
+use embassy_sync::{blocking_mutex::{raw::CriticalSectionRawMutex, CriticalSectionMutex}, channel::Channel};
 use embassy_time::{Duration, Timer};
 use esp_hal::time::Rate;
 
@@ -242,6 +242,8 @@ const PLAYER_CHANNEL_DEPTH: usize = 3;
 pub type PlayerChannel = Channel::<CriticalSectionRawMutex, PlayerCmd, PLAYER_CHANNEL_DEPTH>;
 pub type PlayerSender<'a> = embassy_sync::channel::Sender<'a, CriticalSectionRawMutex, PlayerCmd, PLAYER_CHANNEL_DEPTH>;
 pub type PlayerReceiver<'a> = embassy_sync::channel::Receiver<'a, CriticalSectionRawMutex, PlayerCmd, PLAYER_CHANNEL_DEPTH>;
+
+pub static PLAYER_SEND: CriticalSectionMutex<RefCell<Option< PlayerSender<'static> >>> = CriticalSectionMutex::new(RefCell::new(None));
 
 
 #[derive(Debug, Default, PartialEq)]

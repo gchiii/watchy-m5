@@ -1,6 +1,11 @@
-use defmt::error;
+use crate::{buzzer::{BuzzerCommand, BuzzerSender}, player::PlayerCmd};
+
+use {esp_backtrace as _, esp_println as _};
+
+use core::marker::PhantomData;
+
 use embassy_time::{Duration, Timer};
-use esp_hal::{ledc::{channel::{self, ChannelIFace}, timer::{self, TimerIFace}, HighSpeed, Ledc}, time::Rate};
+use esp_hal::time::Rate;
 
 #[allow(unused)]
 // Note frequencies in Hertz as f64
@@ -95,90 +100,173 @@ pub const NOTE_D8: f64 = 4699.0;
 pub const NOTE_DS8: f64 = 4978.0;
 pub const REST: f64 = 0.0; // No sound, for pauses
 
-pub struct Note (pub f64, pub i16);
 
-pub struct Buzzer {
-    ledc: Ledc<'static>, 
-    buzzer: esp_hal::peripherals::GPIO2<'static>,
-}
+/// NoteLength is from music notation like quarter notes, eigth notes, whole notes 
+/// the absolute value of the number is the divisor. ie 1 is a whole note, 2 is for a half note etc
+/// the sign indicates whether or not the note is dotted (which means it is slightly longer)
+#[derive(Clone, Copy)]
+pub struct NoteLength (pub i16);
 
-impl Buzzer {
-    pub fn new(ledc: Ledc<'static>, buzzer: esp_hal::peripherals::GPIO2<'static>) -> Self {
-        Self { ledc, buzzer }
+impl NoteLength {
+    pub fn is_dotted(&self) -> bool {
+        let NoteLength(l) = self;
+        *l < 0
     }
-
-    pub async fn play_tone(&mut self, rate: Rate, duration_ms: u64) {
-        let pause_duration = duration_ms / 10; // 10% of duration_ms
-
-        let mut hstimer0 = self.ledc.timer::<HighSpeed>(timer::Number::Timer0);
-        let mut channel0 = self.ledc.channel(channel::Number::Channel0, self.buzzer.reborrow());
-        let hstimer_cfg = timer::config::Config {
-            duty: timer::config::Duty::Duty10Bit,
-            clock_source: timer::HSClockSource::APBClk,
-            frequency: rate,
-        };
-        if let Err(e) = hstimer0.configure(hstimer_cfg) {
-            error!("problem configuring hstimer. {}", e);
-        }
-        let channel_cfg = channel::config::Config {
-            timer: &hstimer0,
-            duty_pct: 50,
-            pin_config: channel::config::PinConfig::PushPull,
-        };
-        if let Err(e) = channel0.configure(channel_cfg){
-            error!("problem configuring channel. {}", e);
-        }
-
-        Timer::after(Duration::from_millis(duration_ms - pause_duration)).await;
-
-        channel0.set_duty(0).unwrap();
-        Timer::after(Duration::from_millis(pause_duration)).await;
-
-    }
-
-}
-
-pub struct Song<'a> {
-    whole_note: u32,
-    pub notes: &'a [Note],
-}
-
-impl<'a> Song<'a> {
-    pub fn new(tempo: u16, notes: &'a [Note]) -> Self {
-        let whole_note = (60_000 * 4) / tempo as u32;
-        Self { whole_note, notes }
-    }
-
-    pub fn calc_note_duration(&self, divider: i16) -> u32 {
-        if divider > 0 {
-            self.whole_note / divider as u32
+    pub fn duration_ms(&self, whole_note: u32) -> u32 {
+        let NoteLength(divider) = *self;
+        if self.is_dotted() {
+            let duration = whole_note / divider.unsigned_abs() as u32;
+            (duration as f64 * 1.5) as u32
         } else {
-            let duration = self.whole_note / divider.unsigned_abs() as u32;
+            whole_note / divider as u32
+        }
+    }    
+}
+
+pub type MusicNoteDuration = i16;
+pub type MusicNoteHertz = f64;
+pub type BuzzerNoteDuration = u32;
+#[derive(Clone, Copy, Debug, defmt::Format, PartialEq)]
+pub enum BuzzerNote {
+    Rest(BuzzerNoteDuration),
+    Sound(Rate, BuzzerNoteDuration),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, defmt::Format)]
+pub enum MusicNote {
+    Rest(MusicNoteDuration),
+    Sound(MusicNoteHertz, MusicNoteDuration),
+}
+
+impl MusicNote {
+
+    fn duration_ms(divider: &MusicNoteDuration, whole_note: &u32) -> u32 { 
+        if *divider > 0 {
+            whole_note / *divider as u32
+        } else {
+            let duration = whole_note / divider.unsigned_abs() as u32;
             (duration as f64 * 1.5) as u32
         }
     }
 
-    pub async fn play_one_note(&self, note: &Note, buzzer: &mut Buzzer) {
-        let Note(freq_hz, duration_type) = note;
-        let note_duration = self.calc_note_duration(*duration_type) as u64;
-        let freq_rate = Rate::from_hz(*freq_hz as u32);
-        if *freq_hz == REST {
-            Timer::after(Duration::from_millis(note_duration)).await;
+    pub fn to_buzzer_note(&self, whole_note: &u32) -> BuzzerNote {
+        match self {
+            MusicNote::Rest(d) => {
+                BuzzerNote::Rest(Self::duration_ms(d, whole_note))
+            },
+            MusicNote::Sound(freq_hz, d) => {
+                let rate = Rate::from_hz(*freq_hz as u32);
+                let duration_ms = Self::duration_ms(d, whole_note);
+                BuzzerNote::Sound(rate, duration_ms)
+            },
+        }
+    }
+}
+
+
+impl From<(MusicNoteHertz, MusicNoteDuration)> for MusicNote {
+    fn from(val: (MusicNoteHertz, MusicNoteDuration)) -> Self {
+        let (hertz, duration) = val;
+        if hertz == REST {
+            MusicNote::Rest(duration)
         } else {
-            buzzer.play_tone(freq_rate, note_duration).await
+            MusicNote::Sound(hertz, duration)
+        }
+    }
+}
+
+
+
+
+#[derive(Clone, Copy, Debug, defmt::Format, PartialEq)]
+pub struct Note {
+    pub frequency: Rate, 
+    pub duration_ms: u64,
+}
+
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Song<'s> {
+    whole_note: u32,
+    pub notes: &'s [MusicNote],
+    index: usize,
+    _phantom: PhantomData<&'s MusicNote>,
+}
+
+
+impl Song<'_> {
+    pub fn new(tempo: u16, some_notes: &'static [MusicNote]) -> Self {
+        let whole_note = (60_000 * 4) / tempo as u32;
+        Self { whole_note, notes: some_notes, _phantom: PhantomData, index: 0 }
+    }
+
+    pub fn next_note(&mut self) -> Option<BuzzerNote>{
+        if let Some(note) = self.notes.get(self.index) {
+            let buz_note = note.to_buzzer_note(&self.whole_note);
+            self.index += 1;
+            return Some(buz_note);
+        }
+        None
+    }
+
+    pub async fn play_next_note(&mut self, tx: BuzzerSender<'_>) -> Option<usize> {
+        if let Some(buz_note) = self.next_note() {
+            let duration_ms = match buz_note {
+                BuzzerNote::Rest(duration_ms) => duration_ms,
+                BuzzerNote::Sound(rate, duration_ms) => {
+                    tx.send(BuzzerCommand::Sound(BuzzerNote::Sound(rate, duration_ms))).await;
+                    duration_ms
+                },
+            } as u64;
+            Timer::after(Duration::from_millis(duration_ms)).await;
+            Some(self.index)
+        } else {
+            self.index = 0;
+            None
         }
     }
 
-    pub async fn play_on(&self, buzzer: &mut Buzzer) {
-        for note in self.notes {
-            self.play_one_note(note, buzzer).await
+    pub async fn play(&mut self, tx: BuzzerSender<'_>) {
+        let note_iter = self.notes.iter();
+        for note in note_iter {
+            let buz_note = note.to_buzzer_note(&self.whole_note);
+            let duration_ms = match buz_note {
+                BuzzerNote::Rest(duration_ms) => duration_ms,
+                BuzzerNote::Sound(rate, duration_ms) => {
+                    tx.send(BuzzerCommand::Sound(BuzzerNote::Sound(rate, duration_ms))).await;
+                    duration_ms
+                },
+            } as u64;
+            Timer::after(Duration::from_millis(duration_ms)).await;
         }
     }
 
+    pub fn stop(&mut self) {
+        self.index = 0;
+    }
 }
 
-pub enum MusicCommand<'a> {
-    Pause,
-    Resume,
-    PlaySong(Song<'a>),
+
+
+#[derive(Debug, defmt::Format, Default, PartialEq, Clone)]
+pub enum SongState {
+    #[default] 
+    Stopped,
+    Paused,
+    Playing,
 }
+
+impl SongState {
+    pub fn execute(self, cmd: PlayerCmd) -> Self {        
+        match (self, cmd) {
+            (SongState::Stopped, PlayerCmd::Play) => SongState::Playing,
+            (SongState::Paused, PlayerCmd::Stop) => SongState::Stopped,
+            (SongState::Paused, PlayerCmd::Play) => SongState::Playing,
+            (SongState::Playing, PlayerCmd::Stop) => SongState::Stopped,
+            (SongState::Playing, PlayerCmd::Pause) => SongState::Paused,
+            (state, _) => state,
+        }
+    }
+}
+
+

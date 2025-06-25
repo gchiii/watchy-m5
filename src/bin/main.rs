@@ -1,31 +1,35 @@
 #![no_std]
 #![no_main]
 
-use defmt::{error, info};
+use defmt::{error, info, trace};
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
 use embedded_hal_bus::spi::ExclusiveDevice;
 use embedded_hal_bus::i2c::RefCellDevice;
 
 use esp_hal::{
-    clock::CpuClock, gpio::{interconnect::PeripheralOutput, Event, Input, InputConfig, Io, Level, Output, OutputConfig}, handler, i2c::master::{BusTimeout, Config as I2cConfig, Error as I2cError, I2c}, ledc::{
-        channel::{self, Channel, ChannelIFace}, 
-        timer::TimerIFace, 
-        Ledc
-    }, ram, spi::{master::{Config, Spi}, Mode}, time::Rate, timer::timg::TimerGroup, Async
+    clock::CpuClock, 
+    gpio::{Input, InputConfig, Io, Level, Output, OutputConfig}, 
+    handler, 
+    i2c::master::{BusTimeout, Config as I2cConfig, I2c}, 
+    ledc::Ledc, 
+    ram, 
+    spi::{master::{Config, Spi}, Mode}, time::Rate, timer::timg::TimerGroup
 };
     
 use mpu6886::Mpu6886;
 use pcf8563::Pcf8563;
 
-use watchy_m5::{
-    music::{self, Buzzer, Note, Song},
-    pink_panther,
-};
-use esp_hal::ledc::timer;
-use esp_hal::{
-    ledc::HighSpeed,
-};
+use static_cell::StaticCell;
+use watchy_m5::buttons::{btn_task, initialize_buttons, INPUT_BUTTONS};
+use watchy_m5::buzzer::{Buzzer, BuzzerChannel, BuzzerState};
+use watchy_m5::music::Song;
+use watchy_m5::player::{player_task, PlayerCmd, Player};
+use watchy_m5::pink_panther;
+
+use embassy_sync::
+    channel::Channel 
+;
 
 use mipidsi::interface::SpiInterface;
 use mipidsi::models::ST7789;
@@ -34,7 +38,7 @@ use mipidsi::Builder;
 use {esp_backtrace as _, esp_println as _};
 
 use core::cell::RefCell;
-use critical_section::Mutex;
+// use critical_section::Mutex as csMutex;
 use embedded_graphics::{
     mono_font::{ascii::FONT_10X20, MonoTextStyle},
     pixelcolor::Rgb565,
@@ -42,18 +46,16 @@ use embedded_graphics::{
     text::Text,
 };
 
+
 extern crate alloc;
+
 
 /// Constants used on this stick
 const DISPLAY_WIDTH: u16 = 135;
 const DISPLAY_HEIGHT: u16 = 240;
 
 
-static BUTTON_A: Mutex<RefCell<Option<Input>>> = Mutex::new(RefCell::new(None));
-static BUTTON_B: Mutex<RefCell<Option<Input>>> = Mutex::new(RefCell::new(None));
-static BUTTON_C: Mutex<RefCell<Option<Input>>> = Mutex::new(RefCell::new(None));
-
-#[embassy_executor::task]
+#[embassy_executor::task(pool_size = 4)]
 async fn run() {
     loop {
         info!("Hello world from embassy using esp-hal-async!");
@@ -61,14 +63,14 @@ async fn run() {
     }
 }
 
-
-#[embassy_executor::task]
-// async fn sing(ledc: Ledc<'static>, mut buzzer: Output<'static>) {
-async fn sing(ledc: Ledc<'static>, buzzer_pin: esp_hal::peripherals::GPIO2<'static>) {
-    let song = Song::new(pink_panther::TEMPO, pink_panther::MELODY.as_slice());
-    let mut buzzer = Buzzer::new(ledc, buzzer_pin);
-    song.play_on(&mut buzzer).await
+#[embassy_executor::task(pool_size = 4)]
+async fn sound_task(mut buzzer: Buzzer<'static>) {
+    let mut buzzer_state = BuzzerState::default();
+    loop {
+        buzzer_state = buzzer.execute(buzzer_state).await;
+    }
 }
+
 
 
 #[esp_hal_embassy::main]
@@ -80,10 +82,16 @@ async fn main(spawner: Spawner) {
 
     esp_alloc::heap_allocator!(size: 72 * 1024);
 
-    let timer0 = TimerGroup::new(peripherals.TIMG1);
-    esp_hal_embassy::init(timer0.timer0);
-
+    let timg1 = TimerGroup::new(peripherals.TIMG1);
+    // let timer0: AnyTimer = timg1.timer0.into();
+    // let timer1: AnyTimer = timg1.timer1.into();
+    // esp_hal_embassy::init([timer0, timer1]);
+    esp_hal_embassy::init(timg1.timer0);
     info!("Embassy initialized!");
+
+    static SND_CHANNEL: StaticCell<BuzzerChannel> = StaticCell::new();
+    let snd_channel = &*SND_CHANNEL.init(Channel::new());
+    
 
     // let timer1 = TimerGroup::new(peripherals.TIMG0);
     // let _init = esp_wifi::init(
@@ -101,7 +109,7 @@ async fn main(spawner: Spawner) {
     let mut led = Output::new(peripherals.GPIO19, Level::Low, OutputConfig::default());
 
     // Get the peripherals for the buzzer
-    let buzzer = peripherals.GPIO2;
+    let buzzer_pin = peripherals.GPIO2;
     let ledc = Ledc::new(peripherals.LEDC);
 
     // set up bus for i2c stuff
@@ -132,29 +140,22 @@ async fn main(spawner: Spawner) {
     
     if let Ok(pwr_loss) = rtc.power_loss() {
         if pwr_loss {
-            info!("RTC lost power!");
+            trace!("RTC lost power!");
         } else {
-            info!("RTC has kept power.");
+            trace!("RTC has kept power.");
         }
     }
 
-    // Set GPIO37 as an input
-    let mut button_a = Input::new(peripherals.GPIO37, InputConfig::default());
-    // Set GPIO39 as an input
-    let mut button_b = Input::new(peripherals.GPIO39, InputConfig::default());
-    // Set GPIO35 as an input
-    let mut button_c = Input::new(peripherals.GPIO35, InputConfig::default());
+    // static PLAYER_CHANNEL: PlayerChannel = Channel::new();
 
-    // ANCHOR: critical_section
-    critical_section::with(|cs| {
-        button_a.listen(Event::FallingEdge);
-        BUTTON_A.borrow_ref_mut(cs).replace(button_a);
-        button_b.listen(Event::FallingEdge);
-        BUTTON_B.borrow_ref_mut(cs).replace(button_b);
-        button_c.listen(Event::FallingEdge);
-        BUTTON_C.borrow_ref_mut(cs).replace(button_c);
-    });
-    // ANCHOR_END: critical_section
+    // Set GPIO37 as an input
+    let button_a: Input<'_> = Input::new(peripherals.GPIO37, InputConfig::default());
+    // Set GPIO39 as an input
+    let button_b = Input::new(peripherals.GPIO39, InputConfig::default());
+    // Set GPIO35 as an input
+    let button_c = Input::new(peripherals.GPIO35, InputConfig::default());
+
+
 
     // lets try to get the interface for the display
     let display_dc = Output::new(peripherals.GPIO14, Level::Low, OutputConfig::default());
@@ -215,12 +216,48 @@ async fn main(spawner: Spawner) {
     // Clear the display initially
     display.clear(colors[0]).unwrap();
 
-    display_bl.set_high();
+    display_bl.set_high();        // let s = self.state;
+
+
+    // let (blah_tx, blah_rx) = crossbeam_channel::bounded::
     
+    let snd_tx = snd_channel.dyn_sender();
+    let snd_rx = snd_channel.dyn_receiver();
+
+    let buzzer = Buzzer::new(ledc, buzzer_pin, snd_rx);
+
     // TODO: Spawn some tasks
-    // let _ = spawner;
-    spawner.spawn(run()).ok();
-    spawner.spawn(sing(ledc, buzzer)).ok();
+    if let Err(e) = spawner.spawn(sound_task(buzzer)) {
+        error!("unable to spawn sound_task: {}", e);
+    }
+    if let Err(e) = spawner.spawn(run()) {
+        error!("unable to spawn run_task: {}", e);
+    }
+
+    if let Ok(btn_reader) = initialize_buttons(button_a, button_b, button_c) {
+        if let Err(e) = spawner.spawn(btn_task(btn_reader)) {
+            error!("unable to spawn run_task: {}", e);
+        }
+
+    }
+    
+ 
+    static CURRENT_SONG: StaticCell<Song> = StaticCell::new();
+    let a_song = Song::new(pink_panther::TEMPO, &pink_panther::MELODY);
+    let ppsong: &'static mut Song = CURRENT_SONG.init( a_song );
+
+    let player_channel = Player::create_chan();
+    let player_tx = player_channel.sender();
+    let player_rx = player_channel.receiver();
+    let player = Player::new(snd_tx, player_rx);
+
+    if let Err(e) = spawner.spawn(player_task(player)) {
+        error!("unable to spawn song task: {}", e);
+    }
+
+    if let Err(e) = player_tx.try_send(PlayerCmd::LoadSong(*ppsong)) {
+        error!("oops: {}", e);
+    }
 
     let mut counter = 0;
     loop {
@@ -236,7 +273,9 @@ async fn main(spawner: Spawner) {
         led.toggle();
 
         match rtc.datetime() {
-            Ok(dt) => info!("datetime {:02}:{:02}:{:02} ", dt.hour, dt.minute, dt.second),
+            Ok(dt) => {
+                info!("datetime {:02}:{:02}:{:02} ", dt.hour, dt.minute, dt.second);
+            },
             Err(e) => {
                 match e {
                     pcf8563::Error::I2cError(error_kind) => error!("i2c error: {}", error_kind),
@@ -247,11 +286,23 @@ async fn main(spawner: Spawner) {
         }
 
         // info!("Hello world!");
-        Timer::after(Duration::from_millis(250)).await;
+        Timer::after(Duration::from_millis(750)).await;
+        // match snd_tx.try_send(BuzzerCommand::Pause) {
+        //     Ok(_) => {
+        //         info!("sending a message!");
+        //         continue;
+        //     },
+        //     Err(e) => {
+        //         error!("trouble sending: {}", e);
+        //     },
+        // }
+
     }
 
     // for inspiration have a look at the examples at https://github.com/esp-rs/esp-hal/tree/esp-hal-v1.0.0-beta.0/examples/src/bin
 }
+
+
 
 
 #[handler]
@@ -259,23 +310,13 @@ async fn main(spawner: Spawner) {
 fn handler() {
     critical_section::with(|cs| {
         info!("GPIO interrupt");
-        if let Some(button_a) = BUTTON_A.borrow_ref_mut(cs).as_mut() {
-            if button_a.is_interrupt_set() {
-                button_a.clear_interrupt();
-                info!("Button A");
-            }
+        if let Some(all_buttons) = INPUT_BUTTONS.borrow(cs).borrow_mut().as_mut() {
+            all_buttons.interrupt_handler();
         }
-        if let Some(button_b) = BUTTON_B.borrow_ref_mut(cs).as_mut() {
-            if button_b.is_interrupt_set() {
-                button_b.clear_interrupt();
-                info!("Button B");
-            }
-        }
-        if let Some(button_c) = BUTTON_C.borrow_ref_mut(cs).as_mut() {
-            if button_c.is_interrupt_set() {
-                button_c.clear_interrupt();
-                info!("Button C");
-            }
-        }
+        // if let Some(player_tx) = PLAYER_SEND.borrow(cs).borrow_mut().as_mut() {
+        //     if let Err(e) = player_tx.try_send(PlayerCmd::Play) {
+        //         error!("oops: {}", e);
+        //     }
+        // }
     });
 }

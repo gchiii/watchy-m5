@@ -38,6 +38,10 @@ pub enum InputEvent {
     ButtonB(ButtonEvent),
     ButtonC(ButtonEvent),
 }
+pub type InputPubSubChan = PubSubChannel<CriticalSectionRawMutex, InputEvent, BUTTON_CHANNEL_MAX_CAPACITY, BUTTON_CHANNEL_MAX_SUBSCRIBERS, BUTTON_CHANNEL_MAX_PUBLISHERS>;
+pub type InputPublisher<'a> = embassy_sync::pubsub::Publisher<'a, CriticalSectionRawMutex, InputEvent, BUTTON_CHANNEL_MAX_CAPACITY, BUTTON_CHANNEL_MAX_SUBSCRIBERS, BUTTON_CHANNEL_MAX_PUBLISHERS>;
+pub type InputSubscriber<'a> = embassy_sync::pubsub::Subscriber<'a, CriticalSectionRawMutex, InputEvent, BUTTON_CHANNEL_MAX_CAPACITY, BUTTON_CHANNEL_MAX_SUBSCRIBERS, BUTTON_CHANNEL_MAX_PUBLISHERS>;
+pub type InputDynSubscriber<'a> = embassy_sync::pubsub::DynSubscriber<'a, InputEvent>;
 
 
 #[derive(Debug, Clone, Copy, defmt::Format)]
@@ -205,10 +209,14 @@ impl<'a> ButtonReaderCollection<'a> {
 
 #[embassy_executor::task]
 pub async fn btn_task(btn_reader: ButtonReaderCollection<'static>) {
+    let input_event_pub = BUTTON_EVENT_CHANNEL.publisher().ok();
     let mut btn_readers = btn_reader;
     loop {
         let input_event = btn_readers.button_events().await;
         info!("Event: {}", input_event);
+        if let Some(ref iepub) = input_event_pub {
+            iepub.publish_immediate(input_event);
+        }
         // match input_event {
         //     InputEvent::ButtonA(button_event) => {
         //         match button_event {
@@ -234,6 +242,7 @@ pub async fn btn_task(btn_reader: ButtonReaderCollection<'static>) {
 
 pub static INPUT_BUTTONS: CriticalSectionMutex<RefCell<Option< ButtonInputCollection<'static> >>> = CriticalSectionMutex::new(RefCell::new(None));
 
+pub static BUTTON_EVENT_CHANNEL: InputPubSubChan = InputPubSubChan::new();
 
 pub static A_CHAN: ButtonPubSubChan = ButtonPubSubChan::new();
 pub static B_CHAN: ButtonPubSubChan = ButtonPubSubChan::new();

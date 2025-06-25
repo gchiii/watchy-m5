@@ -70,7 +70,7 @@ esp-wifi = { version = "0.14.0", features = [
 ] }
 
 heapless = { version = "0.8.0", default-features = false, features = ["defmt-03"] }
-static_cell = { version = "2.1.0", features = ["nightly"] }
+static_cell = { version = "2.1.1", features = ["nightly"] }
 mipidsi = "0.9.0"
 embedded-graphics = { version = "0.8.1", features = ["defmt"] }
 axp192 = "0.2.0"
@@ -82,6 +82,7 @@ allocator-api2 = { version = "0.3", default-features = false, features = ["alloc
 thiserror-no-std = "2.0.2"
 no-std-compat2 = "0.4.5"
 esp-hal-procmacros = { version = "0.18.0", features = ["embassy"] }
+portable-atomic-util = { version = "0.2.4", features = ["alloc"] }
 
 
 [patch.crates-io]

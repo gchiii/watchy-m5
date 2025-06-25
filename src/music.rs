@@ -4,7 +4,6 @@ use {esp_backtrace as _, esp_println as _};
 
 use core::marker::PhantomData;
 
-use allocator_api2::vec::Vec;
 use embassy_time::{Duration, Timer};
 use esp_hal::time::Rate;
 
@@ -186,22 +185,47 @@ pub struct Note {
 }
 
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Song<'s> {
     whole_note: u32,
-    pub notes: Vec<MusicNote>,
+    pub notes: &'s [MusicNote],
     index: usize,
     _phantom: PhantomData<&'s MusicNote>,
 }
 
 
 impl Song<'_> {
-    pub fn new(tempo: u16, some_notes: &[MusicNote]) -> Self {
+    pub fn new(tempo: u16, some_notes: &'static [MusicNote]) -> Self {
         let whole_note = (60_000 * 4) / tempo as u32;
-        let notes: Vec<MusicNote> = some_notes.into();
-        Self { whole_note, notes, _phantom: PhantomData, index: 0 }
+        Self { whole_note, notes: some_notes, _phantom: PhantomData, index: 0 }
     }
-    
+
+    pub fn next_note(&mut self) -> Option<BuzzerNote>{
+        if let Some(note) = self.notes.get(self.index) {
+            let buz_note = note.to_buzzer_note(&self.whole_note);
+            self.index += 1;
+            return Some(buz_note);
+        }
+        None
+    }
+
+    pub async fn play_next_note(&mut self, tx: BuzzerSender<'_>) -> Option<usize> {
+        if let Some(buz_note) = self.next_note() {
+            let duration_ms = match buz_note {
+                BuzzerNote::Rest(duration_ms) => duration_ms,
+                BuzzerNote::Sound(rate, duration_ms) => {
+                    tx.send(BuzzerCommand::Sound(BuzzerNote::Sound(rate, duration_ms))).await;
+                    duration_ms
+                },
+            } as u64;
+            Timer::after(Duration::from_millis(duration_ms)).await;
+            Some(self.index)
+        } else {
+            self.index = 0;
+            None
+        }
+    }
+
     pub async fn play(&mut self, tx: BuzzerSender<'_>) {
         let note_iter = self.notes.iter();
         for note in note_iter {

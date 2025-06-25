@@ -1,10 +1,18 @@
-use core::cell::RefCell;
-
-use embassy_sync::{blocking_mutex::{raw::CriticalSectionRawMutex, CriticalSectionMutex}, channel::Channel};
-
+use core::{cell::RefCell, marker::PhantomData};
+use embassy_futures::select::{select, select3, Either, Either3};
+use embassy_sync::zerocopy_channel;
+use embassy_sync::channel::Channel;
+use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, CriticalSectionMutex};
+// use embassy_sync::mutex::Mutex;
+use static_cell::StaticCell;
+use crate::buttons::{InputEvent, InputSubscriber, BUTTON_EVENT_CHANNEL};
 use crate::{buzzer::BuzzerSender, music::Song};
 
 
+
+pub type BetterPlayerChannel<'a> = zerocopy_channel::Channel<'a, CriticalSectionRawMutex, PlayerCmd>;
+pub type BetterPlayerSender<'a> = zerocopy_channel::Sender<'a, CriticalSectionRawMutex, PlayerCmd>;
+pub type BetterPlayerReceiver<'a> = zerocopy_channel::Receiver<'a, CriticalSectionRawMutex, PlayerCmd>;
 
 const PLAYER_CHANNEL_DEPTH: usize = 3;
 pub type PlayerChannel = Channel::<CriticalSectionRawMutex, PlayerCmd, PLAYER_CHANNEL_DEPTH>;
@@ -13,12 +21,17 @@ pub type PlayerReceiver<'a> = embassy_sync::channel::Receiver<'a, CriticalSectio
 
 pub static PLAYER_SEND: CriticalSectionMutex<RefCell<Option< PlayerSender<'static> >>> = CriticalSectionMutex::new(RefCell::new(None));
 
+// use this as a static that can only be referneced within this module
+// static PLAYER_CHANNEL: CriticalSectionMutex<PlayerChannel> = CriticalSectionMutex::new(PlayerChannel::new());
+// static PLAYER_CHANNEL: PlayerChannel = PlayerChannel::new();
+
+
 #[derive(Debug, PartialEq)]
 pub enum PlayerCmd {
     Stop,
     Pause,
     Play,
-    LoadSong(&'static mut Song<'static>),
+    LoadSong(Song<'static>),
 }
 
 impl defmt::Format for PlayerCmd {
@@ -33,27 +46,61 @@ impl defmt::Format for PlayerCmd {
 }
 
 
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq, Clone, Copy)]
 pub enum PlayerState {
     #[default] 
     NoSong,
-    Stopped(&'static mut Song<'static>),
-    Paused(&'static mut Song<'static>),
-    Playing(&'static mut Song<'static>),
+    Stopped(Song<'static>),
+    Paused(Song<'static>),
+    Playing(Song<'static>),
 }
 
 impl PlayerState {
-    pub fn exec_cmd(self, cmd: PlayerCmd) -> PlayerState {
+    pub fn is_playing(self) -> bool {
+        matches!(self, PlayerState::Playing(_))
+    }
+
+    pub fn get_playing_song(self) -> Option<Song<'static>> {
+        match self {
+            PlayerState::Playing(song) => Some(song),
+            _ => None,
+        }
+    }
+
+    pub fn song(self) -> Option<Song<'static>> {
+        match self {
+            PlayerState::NoSong => None,
+            PlayerState::Stopped(song) => Some(song),
+            PlayerState::Paused(song) => Some(song),
+            PlayerState::Playing(song) => Some(song),
+        }
+    }
+
+    pub fn exec_input(self, event: InputEvent) -> PlayerState {
+        match (event, self) {
+            (_, PlayerState::NoSong) => PlayerState::NoSong,
+            (InputEvent::ButtonA(_button_event), PlayerState::Stopped(song)) => PlayerState::Playing(song),
+            (InputEvent::ButtonB(_button_event), PlayerState::Stopped(song)) => PlayerState::Playing(song),
+            (InputEvent::ButtonC(_button_event), PlayerState::Stopped(song)) => PlayerState::Playing(song),
+            (InputEvent::ButtonA(_button_event), PlayerState::Paused(song)) => PlayerState::Playing(song),
+            (InputEvent::ButtonB(_button_event), PlayerState::Paused(song)) => PlayerState::Playing(song),
+            (InputEvent::ButtonC(_button_event), PlayerState::Paused(song)) => PlayerState::Playing(song),
+            (InputEvent::ButtonA(_button_event), PlayerState::Playing(song)) => PlayerState::Paused(song),
+            (InputEvent::ButtonB(_button_event), PlayerState::Playing(song)) => PlayerState::Paused(song),
+            (InputEvent::ButtonC(_button_event), PlayerState::Playing(song)) => PlayerState::Paused(song),
+        }
+    }
+    pub fn exec_cmd(self, cmd: &mut PlayerCmd) -> PlayerState {
         match (cmd, self) {
-            (PlayerCmd::Stop, PlayerState::Paused(song)) => {
+            (PlayerCmd::Stop, PlayerState::Paused(mut song)) => {
                 song.stop();
                 PlayerState::Stopped(song)
             },
-            (PlayerCmd::Stop, PlayerState::Playing(song)) => {
+            (PlayerCmd::Stop, PlayerState::Playing(mut song)) => {
                 song.stop();
                 PlayerState::Stopped(song)                
             },
-            (PlayerCmd::Stop, PlayerState::Stopped(song)) => {
+            (PlayerCmd::Stop, PlayerState::Stopped(mut song)) => {
                 song.stop();
                 PlayerState::Stopped(song)                
             },
@@ -66,43 +113,96 @@ impl PlayerState {
             (PlayerCmd::Stop, PlayerState::NoSong) => PlayerState::NoSong,
             (PlayerCmd::Pause, PlayerState::NoSong) => PlayerState::NoSong,
             (PlayerCmd::Play, PlayerState::NoSong) => PlayerState::NoSong,
-            (PlayerCmd::LoadSong(song), _) => PlayerState::Stopped(song),
+            (PlayerCmd::LoadSong(song), _) => PlayerState::Stopped(*song),
         }
     }
 }
 
 
-#[embassy_executor::task(pool_size = 4)]
-pub async fn player_task(player_rx: PlayerReceiver<'static>, buzzer_tx: BuzzerSender<'static>) {
-    // song.play(buzzer_tx).await
-    let mut player_state = PlayerState::default();
+// the player needs to have a channel for receiving commands and data, and needs a channel to send data to the buzzer
+pub struct Player<'p> {
+    buzz: BuzzerSender<'p>,
+    // state: Mutex<CriticalSectionRawMutex, PlayerState>,
+    state: PlayerState,
+    _phantom: PhantomData<&'p PlayerChannel>,
+    rx: PlayerReceiver<'p>,
+}
 
-    loop {
-        if player_state == PlayerState::NoSong {
-            let cmd = player_rx.receive().await;
-            player_state = player_state.exec_cmd(cmd);
-        }
-        player_state = match player_state {
-            PlayerState::NoSong => PlayerState::NoSong,
-            PlayerState::Stopped(song) => PlayerState::Stopped(song),
-            PlayerState::Paused(song) => PlayerState::Paused(song),
-            PlayerState::Playing(song) => {
-                song.play(buzzer_tx).await;
-                PlayerState::Playing(song)
-            },
-        };
-        let cmd = player_rx.receive().await;
-        player_state = player_state.exec_cmd(cmd);
+static PCHAN: StaticCell<PlayerChannel> = StaticCell::new();
 
-        // if let PlayerState::Playing(song) = player_state {
-        //     let play_future = song.play(buzzer_tx);
-        // }
+impl<'p> Player<'p> {
 
-        // if player_state == PlayerState::NoSong {
-        //     let cmd = player_rx.receive().await;
-        //     player_state = player_state.exec_cmd(cmd);
-        // } else {
-        // }
+    pub fn create_chan() -> &'static mut PlayerChannel {        
+        PCHAN.init_with(PlayerChannel::new)
     }
-    
+
+    pub fn new(buzz: BuzzerSender<'p>, rx: PlayerReceiver<'p>) -> Self {
+        // let chan = PlayerChannel::new();
+        // let chan = Self::create_chan();
+        Self { 
+            // chan, 
+            buzz, _phantom: PhantomData, 
+            state: PlayerState::default(),
+            rx,
+        }
+    }
+
+
+    pub async fn playing(&self, mut song: Song<'static>) -> PlayerState {
+        match song.play_next_note(self.buzz).await {
+            Some(_) => PlayerState::Playing(song),
+            None => PlayerState::Stopped(song),
+        }
+    }
+
+    pub async fn fancy_exec(&mut self, input_sub: &mut InputSubscriber<'p>) -> PlayerState {
+        let cmd_rx = self.rx.receive();
+        let msg_rx = input_sub.next_message_pure();
+        self.state =
+        if let Some(song) = self.state.get_playing_song() {
+            let play = self.playing(song);
+            match select3(msg_rx, cmd_rx, play).await {
+                Either3::First(event) => self.state.exec_input(event),
+                Either3::Second(mut cmd) => self.state.exec_cmd(&mut cmd),
+                Either3::Third(s) => s,
+            }
+        } else {
+            match select(msg_rx, cmd_rx).await {
+                Either::First(event) => self.state.exec_input(event),
+                Either::Second(mut cmd) => self.state.exec_cmd(&mut cmd),
+            }
+        };
+        self.state
+    }
+
+    pub async fn exec(&mut self) -> PlayerState {
+        let player_rx = self.rx;
+        let mut guard = self.state;
+        if guard.is_playing() {
+            if let Some(song) = guard.song() {
+                guard = self.playing(song).await;
+            }
+        }
+
+        let mut cmd = player_rx.receive().await;
+        let player_state = guard.exec_cmd(&mut cmd);
+        guard = player_state;
+        self.state = guard;
+        player_state
+    }
+
+}
+
+
+#[embassy_executor::task(pool_size = 4)]
+pub async fn player_task(mut player: Player<'static>) {
+    let mut input_event_sub: Option<InputSubscriber<'_>> = BUTTON_EVENT_CHANNEL.subscriber().ok();
+    loop {
+        // let blah = input_event_sub.as_mut();
+        if let Some(input_sub) = input_event_sub.as_mut() {
+            player.fancy_exec(input_sub).await;
+        } else {
+            player.exec().await;
+        }
+    }
 }

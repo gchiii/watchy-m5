@@ -24,7 +24,7 @@ use static_cell::StaticCell;
 use watchy_m5::buttons::{btn_task, initialize_buttons, INPUT_BUTTONS};
 use watchy_m5::buzzer::{Buzzer, BuzzerChannel, BuzzerState};
 use watchy_m5::music::Song;
-use watchy_m5::player::{player_task, PlayerChannel, PlayerReceiver, PlayerSender, PlayerCmd, PLAYER_SEND};
+use watchy_m5::player::{player_task, PlayerCmd, Player};
 use watchy_m5::pink_panther;
 
 use embassy_sync::
@@ -146,7 +146,7 @@ async fn main(spawner: Spawner) {
         }
     }
 
-    static PLAYER_CHANNEL: PlayerChannel = Channel::new();
+    // static PLAYER_CHANNEL: PlayerChannel = Channel::new();
 
     // Set GPIO37 as an input
     let button_a: Input<'_> = Input::new(peripherals.GPIO37, InputConfig::default());
@@ -156,15 +156,6 @@ async fn main(spawner: Spawner) {
     let button_c = Input::new(peripherals.GPIO35, InputConfig::default());
 
 
-    // ANCHOR: critical_section
-    let player_rx = critical_section::with(|cs| {
-        let player_tx: PlayerSender<'static> = PLAYER_CHANNEL.sender();
-        let player_rx: PlayerReceiver<'static> = PLAYER_CHANNEL.receiver();
-        // let player_rx: PlayerReceiver = player_channel.dyn_receiver();
-        PLAYER_SEND.borrow(cs).replace(Some(player_tx));
-        player_rx
-    });
-    // ANCHOR_END: critical_section
 
     // lets try to get the interface for the display
     let display_dc = Output::new(peripherals.GPIO14, Level::Low, OutputConfig::default());
@@ -252,22 +243,21 @@ async fn main(spawner: Spawner) {
     
  
     static CURRENT_SONG: StaticCell<Song> = StaticCell::new();
-    let a_song = Song::new(pink_panther::TEMPO, &pink_panther::MELODY);    
+    let a_song = Song::new(pink_panther::TEMPO, &pink_panther::MELODY);
     let ppsong: &'static mut Song = CURRENT_SONG.init( a_song );
 
-    if let Err(e) = spawner.spawn(player_task(player_rx, snd_tx)) {
+    let player_channel = Player::create_chan();
+    let player_tx = player_channel.sender();
+    let player_rx = player_channel.receiver();
+    let player = Player::new(snd_tx, player_rx);
+
+    if let Err(e) = spawner.spawn(player_task(player)) {
         error!("unable to spawn song task: {}", e);
     }
 
-    critical_section::with(|cs| {
-        if let Some(player_tx) = PLAYER_SEND.borrow(cs).borrow_mut().as_mut() {
-            if let Err(e) = player_tx.try_send(PlayerCmd::LoadSong(ppsong)) {
-                error!("oops: {}", e);
-            }
-        }
-    });
-    // player_tx.send(watchy_m5::music::PlayerCmd::LoadSong(ppsong)).await;
-    // // snd_tx.send(BuzzerCommand::Play(ppsong)).await;
+    if let Err(e) = player_tx.try_send(PlayerCmd::LoadSong(*ppsong)) {
+        error!("oops: {}", e);
+    }
 
     let mut counter = 0;
     loop {

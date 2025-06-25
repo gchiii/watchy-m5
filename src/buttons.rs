@@ -217,26 +217,6 @@ pub async fn btn_task(btn_reader: ButtonReaderCollection<'static>) {
         if let Some(ref iepub) = input_event_pub {
             iepub.publish_immediate(input_event);
         }
-        // match input_event {
-        //     InputEvent::ButtonA(button_event) => {
-        //         match button_event {
-        //             ButtonEvent::Short => todo!(),
-        //             ButtonEvent::Long => todo!(),
-        //         }
-        //     },
-        //     InputEvent::ButtonB(button_event) => {
-        //         match button_event {
-        //             ButtonEvent::Short => todo!(),
-        //             ButtonEvent::Long => todo!(),                    
-        //         }
-        //     },
-        //     InputEvent::ButtonC(button_event) => {
-        //         match button_event {
-        //             ButtonEvent::Short => todo!(),
-        //             ButtonEvent::Long => todo!(),                    
-        //         }
-        //     },
-        // }
     }
 }
 

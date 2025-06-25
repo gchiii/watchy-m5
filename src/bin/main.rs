@@ -218,8 +218,6 @@ async fn main(spawner: Spawner) {
 
     display_bl.set_high();        // let s = self.state;
 
-
-    // let (blah_tx, blah_rx) = crossbeam_channel::bounded::
     
     let snd_tx = snd_channel.dyn_sender();
     let snd_rx = snd_channel.dyn_receiver();
@@ -287,15 +285,6 @@ async fn main(spawner: Spawner) {
 
         // info!("Hello world!");
         Timer::after(Duration::from_millis(750)).await;
-        // match snd_tx.try_send(BuzzerCommand::Pause) {
-        //     Ok(_) => {
-        //         info!("sending a message!");
-        //         continue;
-        //     },
-        //     Err(e) => {
-        //         error!("trouble sending: {}", e);
-        //     },
-        // }
 
     }
 
@@ -313,10 +302,5 @@ fn handler() {
         if let Some(all_buttons) = INPUT_BUTTONS.borrow(cs).borrow_mut().as_mut() {
             all_buttons.interrupt_handler();
         }
-        // if let Some(player_tx) = PLAYER_SEND.borrow(cs).borrow_mut().as_mut() {
-        //     if let Err(e) = player_tx.try_send(PlayerCmd::Play) {
-        //         error!("oops: {}", e);
-        //     }
-        // }
     });
 }

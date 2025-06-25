@@ -3,7 +3,6 @@ use embassy_futures::select::{select, select3, Either, Either3};
 use embassy_sync::zerocopy_channel;
 use embassy_sync::channel::Channel;
 use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, CriticalSectionMutex};
-// use embassy_sync::mutex::Mutex;
 use static_cell::StaticCell;
 use crate::buttons::{InputEvent, InputSubscriber, BUTTON_EVENT_CHANNEL};
 use crate::{buzzer::BuzzerSender, music::Song};
@@ -20,10 +19,6 @@ pub type PlayerSender<'a> = embassy_sync::channel::Sender<'a, CriticalSectionRaw
 pub type PlayerReceiver<'a> = embassy_sync::channel::Receiver<'a, CriticalSectionRawMutex, PlayerCmd, PLAYER_CHANNEL_DEPTH>;
 
 pub static PLAYER_SEND: CriticalSectionMutex<RefCell<Option< PlayerSender<'static> >>> = CriticalSectionMutex::new(RefCell::new(None));
-
-// use this as a static that can only be referneced within this module
-// static PLAYER_CHANNEL: CriticalSectionMutex<PlayerChannel> = CriticalSectionMutex::new(PlayerChannel::new());
-// static PLAYER_CHANNEL: PlayerChannel = PlayerChannel::new();
 
 
 #[derive(Debug, PartialEq)]
@@ -122,7 +117,6 @@ impl PlayerState {
 // the player needs to have a channel for receiving commands and data, and needs a channel to send data to the buzzer
 pub struct Player<'p> {
     buzz: BuzzerSender<'p>,
-    // state: Mutex<CriticalSectionRawMutex, PlayerState>,
     state: PlayerState,
     _phantom: PhantomData<&'p PlayerChannel>,
     rx: PlayerReceiver<'p>,
@@ -137,10 +131,7 @@ impl<'p> Player<'p> {
     }
 
     pub fn new(buzz: BuzzerSender<'p>, rx: PlayerReceiver<'p>) -> Self {
-        // let chan = PlayerChannel::new();
-        // let chan = Self::create_chan();
         Self { 
-            // chan, 
             buzz, _phantom: PhantomData, 
             state: PlayerState::default(),
             rx,
@@ -158,18 +149,19 @@ impl<'p> Player<'p> {
     pub async fn fancy_exec(&mut self, input_sub: &mut InputSubscriber<'p>) -> PlayerState {
         let cmd_rx = self.rx.receive();
         let msg_rx = input_sub.next_message_pure();
-        self.state =
-        if let Some(song) = self.state.get_playing_song() {
-            let play = self.playing(song);
-            match select3(msg_rx, cmd_rx, play).await {
-                Either3::First(event) => self.state.exec_input(event),
-                Either3::Second(mut cmd) => self.state.exec_cmd(&mut cmd),
-                Either3::Third(s) => s,
-            }
-        } else {
-            match select(msg_rx, cmd_rx).await {
-                Either::First(event) => self.state.exec_input(event),
-                Either::Second(mut cmd) => self.state.exec_cmd(&mut cmd),
+        self.state = {
+            if let Some(song) = self.state.get_playing_song() {
+                let play = self.playing(song);
+                match select3(msg_rx, cmd_rx, play).await {
+                    Either3::First(event) => self.state.exec_input(event),
+                    Either3::Second(mut cmd) => self.state.exec_cmd(&mut cmd),
+                    Either3::Third(s) => s,
+                }
+            } else {
+                match select(msg_rx, cmd_rx).await {
+                    Either::First(event) => self.state.exec_input(event),
+                    Either::Second(mut cmd) => self.state.exec_cmd(&mut cmd),
+                }
             }
         };
         self.state
@@ -198,7 +190,6 @@ impl<'p> Player<'p> {
 pub async fn player_task(mut player: Player<'static>) {
     let mut input_event_sub: Option<InputSubscriber<'_>> = BUTTON_EVENT_CHANNEL.subscriber().ok();
     loop {
-        // let blah = input_event_sub.as_mut();
         if let Some(input_sub) = input_event_sub.as_mut() {
             player.fancy_exec(input_sub).await;
         } else {

@@ -4,24 +4,23 @@
 use defmt::{error, info, trace};
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
-use embedded_hal_bus::spi::ExclusiveDevice;
 use embedded_hal_bus::i2c::RefCellDevice;
 
+use esp_alloc::HeapStats;
 use esp_hal::{
     clock::CpuClock, 
     gpio::{Input, InputConfig, Io, Level, Output, OutputConfig}, 
     handler, 
     i2c::master::{BusTimeout, Config as I2cConfig, I2c}, 
     ledc::Ledc, 
-    ram, 
-    spi::{master::{Config, Spi}, Mode}, time::Rate, timer::timg::TimerGroup
+    ram, time::Rate, timer::timg::TimerGroup
 };
     
 use mpu6886::Mpu6886;
 use pcf8563::Pcf8563;
 
 use static_cell::StaticCell;
-use watchy_m5::buttons::{btn_task, initialize_buttons, INPUT_BUTTONS};
+use watchy_m5::{buttons::{btn_task, initialize_buttons, INPUT_BUTTONS}, display::TDisplay};
 use watchy_m5::buzzer::{Buzzer, BuzzerChannel, BuzzerState};
 use watchy_m5::music::Song;
 use watchy_m5::player::{player_task, PlayerCmd, Player};
@@ -31,13 +30,9 @@ use embassy_sync::
     channel::Channel 
 ;
 
-use mipidsi::interface::SpiInterface;
-use mipidsi::models::ST7789;
-use mipidsi::options::{ColorInversion, Orientation};
-use mipidsi::Builder;
 use {esp_backtrace as _, esp_println as _};
 
-use core::cell::RefCell;
+use core::{cell::RefCell, ops::DerefMut};
 // use critical_section::Mutex as csMutex;
 use embedded_graphics::{
     mono_font::{ascii::FONT_10X20, MonoTextStyle},
@@ -81,7 +76,9 @@ async fn main(spawner: Spawner) {
     let peripherals = esp_hal::init(config);
 
     esp_alloc::heap_allocator!(size: 72 * 1024);
+    // esp_alloc::psram_allocator!(peripherals.PSRAM, esp_hal::psram);
 
+    let stats: HeapStats = esp_alloc::HEAP.stats();
     let timg1 = TimerGroup::new(peripherals.TIMG1);
     // let timer0: AnyTimer = timg1.timer0.into();
     // let timer1: AnyTimer = timg1.timer1.into();
@@ -146,8 +143,6 @@ async fn main(spawner: Spawner) {
         }
     }
 
-    // static PLAYER_CHANNEL: PlayerChannel = Channel::new();
-
     // Set GPIO37 as an input
     let button_a: Input<'_> = Input::new(peripherals.GPIO37, InputConfig::default());
     // Set GPIO39 as an input
@@ -157,42 +152,20 @@ async fn main(spawner: Spawner) {
 
 
 
-    // lets try to get the interface for the display
-    let display_dc = Output::new(peripherals.GPIO14, Level::Low, OutputConfig::default());
-    let display_rst = Output::new(peripherals.GPIO12, Level::Low, OutputConfig::default());
+    // // lets try to get the interface for the display
     let backlight = peripherals.GPIO27;
-    let mut display_bl = Output::new(backlight, Level::Low, OutputConfig::default());
-
-    
-    let display_spi: Spi<'_, esp_hal::Async> = Spi::new(
-        peripherals.SPI2, 
-        Config::default()
-            .with_frequency(Rate::from_mhz(40))
-            .with_mode(Mode::_0)
-    ).unwrap()
-    .with_sck(peripherals.GPIO13)
-    // .with_cs(peripherals.GPIO5)
-    .with_mosi(peripherals.GPIO15)
-    .into_async();
-
-    let display_cs: Output<'_> = Output::new(peripherals.GPIO5, Level::High, OutputConfig::default());
-    let disp_device = ExclusiveDevice::new_no_delay(display_spi, display_cs).unwrap();
-
+    let mut display_bl = Output::new(backlight, Level::Low, OutputConfig::default());   
     // let mut display_buf = [0_u8; DISPLAY_WIDTH as usize * DISPLAY_HEIGHT as usize];
     let mut display_buf = [0_u8; 512];
-
-    let mut display_delay = esp_hal::delay::Delay::new();
-    let di = SpiInterface::new(disp_device, display_dc, &mut display_buf);
-    let rotation = Orientation::new().rotate(mipidsi::options::Rotation::Deg0);
-    let mut display = Builder::new(ST7789, di)
-        .reset_pin(display_rst)
-        .invert_colors(ColorInversion::Inverted)
-        .display_size(DISPLAY_WIDTH, DISPLAY_HEIGHT)
-        .display_offset(52, 40)
-        .orientation(rotation)
-        .init(&mut display_delay)
-        .unwrap();
-
+    let mut display = TDisplay::new(
+        peripherals.SPI2, 
+        peripherals.GPIO14, 
+        peripherals.GPIO12, 
+        peripherals.GPIO5, 
+        peripherals.GPIO13, 
+        peripherals.GPIO15,
+        &mut display_buf
+    );
     // Text
     // let char_w = FONT_10X20.character_size.width; //10;
     // let char_h = FONT_10X20.character_size.height; //20;
@@ -257,6 +230,7 @@ async fn main(spawner: Spawner) {
         error!("oops: {}", e);
     }
 
+    info!("{}", stats);
     let mut counter = 0;
     loop {
         counter += 1;
@@ -265,7 +239,7 @@ async fn main(spawner: Spawner) {
         
         // Draw text
         let right = Text::new(text, Point::new(text_x, text_y), text_style)
-            .draw(&mut display)
+            .draw(display.deref_mut())
             .unwrap();
         text_x = if right.x <= 0 { DISPLAY_WIDTH.into() } else { text_x - 10 };
         led.toggle();

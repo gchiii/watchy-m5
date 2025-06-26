@@ -1,6 +1,5 @@
 use core::{cell::RefCell, marker::PhantomData};
 use embassy_futures::select::{select, select3, Either, Either3};
-use embassy_sync::zerocopy_channel;
 use embassy_sync::channel::Channel;
 use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, CriticalSectionMutex};
 use static_cell::StaticCell;
@@ -8,10 +7,6 @@ use crate::buttons::{InputEvent, InputSubscriber, BUTTON_EVENT_CHANNEL};
 use crate::{buzzer::BuzzerSender, music::Song};
 
 
-
-pub type BetterPlayerChannel<'a> = zerocopy_channel::Channel<'a, CriticalSectionRawMutex, PlayerCmd>;
-pub type BetterPlayerSender<'a> = zerocopy_channel::Sender<'a, CriticalSectionRawMutex, PlayerCmd>;
-pub type BetterPlayerReceiver<'a> = zerocopy_channel::Receiver<'a, CriticalSectionRawMutex, PlayerCmd>;
 
 const PLAYER_CHANNEL_DEPTH: usize = 3;
 pub type PlayerChannel = Channel::<CriticalSectionRawMutex, PlayerCmd, PLAYER_CHANNEL_DEPTH>;

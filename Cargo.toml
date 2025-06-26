@@ -83,6 +83,10 @@ thiserror-no-std = "2.0.2"
 no-std-compat2 = "0.4.5"
 esp-hal-procmacros = { version = "0.18.0", features = ["embassy"] }
 portable-atomic-util = { version = "0.2.4", features = ["alloc"] }
+embedded-hal-async = "1.0.0"
+embedded-hal = "1.0"
+# embedded-graphics-framebuf = "0.5.0"
+
 
 
 [patch.crates-io]

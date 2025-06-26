@@ -1,3 +1,4 @@
+use defmt::error;
 // use defmt::{error, info, trace};
 // use embassy_executor::Spawner;
 // use embassy_time::{Duration, Timer};
@@ -20,6 +21,17 @@ use {esp_backtrace as _, esp_println as _};
 //     prelude::*,
 //     text::Text,
 // };
+use thiserror_no_std::Error;
+
+
+#[derive(Debug, Error, defmt::Format)]
+pub enum DisplayError {
+    ConfigError(#[from] esp_hal::spi::master::ConfigError),
+    Infallible(#[from] core::convert::Infallible),
+    SpiError(#[from] esp_hal::spi::Error),
+    InitError,
+}
+
 
 
 // These are for vertical orientation
@@ -95,6 +107,44 @@ impl<'d> TDisplay<'d> {
 
         Self { d: display  }
     }
+
+    pub fn create(p_spi: impl Instance + 'd, dc: impl OutputPin + 'd, rst: impl OutputPin + 'd, cs: impl PeripheralOutput<'d> + OutputPin + 'd, sclk: impl PeripheralOutput<'d>, mosi: impl PeripheralOutput<'d>, buf: &'d mut [u8] ) -> Result<Self, DisplayError> {
+        let display_dc = Output::new(dc, Level::Low, OutputConfig::default());
+        let display_rst = Output::new(rst, Level::Low, OutputConfig::default());
+        
+        let display_spi: Spi<'_, esp_hal::Async> = Spi::new(
+            p_spi, 
+            Config::default()
+                .with_frequency(Rate::from_mhz(40))
+                .with_mode(Mode::_0)
+        )?
+        .with_sck(sclk)
+        .with_mosi(mosi)
+        .into_async();
+
+        let display_cs: Output<'_> = Output::new(cs, Level::High, OutputConfig::default());
+        let disp_device = ExclusiveDevice::new_no_delay(display_spi, display_cs)?;
+
+        let mut display_delay = esp_hal::delay::Delay::new();
+        let di = SpiInterface::new(disp_device, display_dc, buf);
+        let rotation = Orientation::new().rotate(mipidsi::options::Rotation::Deg0);
+        let t_display = Builder::new(ST7789, di)
+            .reset_pin(display_rst)
+            .invert_colors(ColorInversion::Inverted)
+            .display_size(WIDTH, HEIGHT)
+            .display_offset(X_OFFSET, Y_OFFSET)
+            .orientation(rotation)
+            .init(&mut display_delay);
+        let display = match t_display {
+            Ok(d) => Ok(d),
+            Err(_e) => {
+                error!("Init Error");
+                Err(DisplayError::InitError)
+            },
+        }?;
+        Ok(Self { d: display  })
+    }
+
 }
 
 

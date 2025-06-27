@@ -20,7 +20,8 @@ use mpu6886::Mpu6886;
 use pcf8563::Pcf8563;
 
 use static_cell::StaticCell;
-use watchy_m5::{buttons::{btn_task, initialize_buttons, INPUT_BUTTONS}, display::TDisplay};
+use watchy_m5::buttons::{btn_task, initialize_buttons, INPUT_BUTTONS};
+use watchy_m5::display::TDisplay;
 use watchy_m5::buzzer::{Buzzer, BuzzerChannel, BuzzerState};
 use watchy_m5::music::Song;
 use watchy_m5::player::{player_task, PlayerCmd, Player};
@@ -166,6 +167,18 @@ async fn main(spawner: Spawner) {
         peripherals.GPIO15,
         &mut display_buf
     );
+
+    // let mut a_display = build_display(
+    //     peripherals.SPI2, 
+    //     peripherals.DMA_SPI2,
+    //     peripherals.GPIO14, 
+    //     peripherals.GPIO12, 
+    //     peripherals.GPIO5, 
+    //     peripherals.GPIO13, 
+    //     peripherals.GPIO15,
+    // ).await
+    // .unwrap();
+
     // Text
     // let char_w = FONT_10X20.character_size.width; //10;
     // let char_h = FONT_10X20.character_size.height; //20;
@@ -186,8 +199,14 @@ async fn main(spawner: Spawner) {
     //     .into_styled(style);
     
 
+    // let frame_buffer = watchy_m5::display::FRAME_BUFFER.init([0; watchy_m5::display::FRAME_BUFFER_SIZE]);
+    // {
+    //     let mut display = get_raw_fb(frame_buffer);
+    //     display.clear(colors[0]).unwrap();
+    // }
+    // a_display.show_raw_data(0, 0, watchy_m5::display::WIDTH, watchy_m5::display::HEIGHT, frame_buffer).await.unwrap();
     // Clear the display initially
-    display.clear(colors[0]).unwrap();
+    // display.clear(colors[0]).unwrap();
 
     display_bl.set_high();        // let s = self.state;
 
@@ -234,14 +253,18 @@ async fn main(spawner: Spawner) {
     let mut counter = 0;
     loop {
         counter += 1;
-        // Fill the display with alternating colors every 8 frames
-        display.clear(colors[(counter / 8) % colors.len()]).unwrap();
-        
-        // Draw text
-        let right = Text::new(text, Point::new(text_x, text_y), text_style)
-            .draw(display.deref_mut())
-            .unwrap();
-        text_x = if right.x <= 0 { DISPLAY_WIDTH.into() } else { text_x - 10 };
+
+        {
+            // let mut display = get_raw_fb(frame_buffer);
+            // Fill the display with alternating colors every 8 frames
+            display.clear(colors[(counter / 8) % colors.len()]).unwrap();
+            
+            // Draw text
+            let right = Text::new(text, Point::new(text_x, text_y), text_style)
+                .draw(display.deref_mut())
+                .unwrap();
+            text_x = if right.x <= 0 { DISPLAY_WIDTH.into() } else { text_x - 10 };
+        }
         led.toggle();
 
         match rtc.datetime() {
@@ -257,6 +280,7 @@ async fn main(spawner: Spawner) {
             },
         }
 
+        // a_display.show_raw_data(0, 0, watchy_m5::display::WIDTH, watchy_m5::display::HEIGHT, frame_buffer).await.unwrap();
         // info!("Hello world!");
         Timer::after(Duration::from_millis(750)).await;
 

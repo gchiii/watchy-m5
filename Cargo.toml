@@ -85,6 +85,7 @@ esp-hal-procmacros = { version = "0.18.0", features = ["embassy"] }
 portable-atomic-util = { version = "0.2.4", features = ["alloc"] }
 embedded-hal-async = "1.0.0"
 embedded-hal = "1.0"
+# esp-display-interface-spi-dma = { version = "0.2.0", features = ["esp32"] }
 # lcd-async = { git = "https://github.com/okhsunrog/lcd-async", rev = "76afd7109bab7070cebebf72bfebfdbd5be421aa"}
 
 

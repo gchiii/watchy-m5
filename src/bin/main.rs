@@ -157,27 +157,17 @@ async fn main(spawner: Spawner) {
     let backlight = peripherals.GPIO27;
     let mut display_bl = Output::new(backlight, Level::Low, OutputConfig::default());   
     // let mut display_buf = [0_u8; DISPLAY_WIDTH as usize * DISPLAY_HEIGHT as usize];
-    let mut display_buf = [0_u8; 512];
+    // let mut display_buf = [0_u8; 512];
     let mut display = TDisplay::new(
         peripherals.SPI2, 
+        peripherals.DMA_SPI2,
         peripherals.GPIO14, 
         peripherals.GPIO12, 
         peripherals.GPIO5, 
         peripherals.GPIO13, 
         peripherals.GPIO15,
-        &mut display_buf
     );
 
-    // let mut a_display = build_display(
-    //     peripherals.SPI2, 
-    //     peripherals.DMA_SPI2,
-    //     peripherals.GPIO14, 
-    //     peripherals.GPIO12, 
-    //     peripherals.GPIO5, 
-    //     peripherals.GPIO13, 
-    //     peripherals.GPIO15,
-    // ).await
-    // .unwrap();
 
     // Text
     // let char_w = FONT_10X20.character_size.width; //10;

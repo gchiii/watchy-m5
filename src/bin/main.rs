@@ -20,8 +20,7 @@ use mpu6886::Mpu6886;
 use pcf8563::Pcf8563;
 
 use static_cell::StaticCell;
-use watchy_m5::buttons::{btn_task, initialize_buttons, INPUT_BUTTONS};
-use watchy_m5::display::TDisplay;
+use watchy_m5::{buttons::{btn_task, initialize_buttons, INPUT_BUTTONS}, display::StickDisplayBuilder};
 use watchy_m5::buzzer::{Buzzer, BuzzerChannel, BuzzerState};
 use watchy_m5::music::Song;
 use watchy_m5::player::{player_task, PlayerCmd, Player};
@@ -34,7 +33,6 @@ use embassy_sync::
 use {esp_backtrace as _, esp_println as _};
 
 use core::{cell::RefCell, ops::DerefMut};
-// use critical_section::Mutex as csMutex;
 use embedded_graphics::{
     mono_font::{ascii::FONT_10X20, MonoTextStyle},
     pixelcolor::Rgb565,
@@ -153,20 +151,21 @@ async fn main(spawner: Spawner) {
 
 
 
-    // // lets try to get the interface for the display
-    let backlight = peripherals.GPIO27;
-    let mut display_bl = Output::new(backlight, Level::Low, OutputConfig::default());   
-    // let mut display_buf = [0_u8; DISPLAY_WIDTH as usize * DISPLAY_HEIGHT as usize];
-    // let mut display_buf = [0_u8; 512];
-    let mut display = TDisplay::new(
-        peripherals.SPI2, 
-        peripherals.DMA_SPI2,
-        peripherals.GPIO14, 
-        peripherals.GPIO12, 
-        peripherals.GPIO5, 
-        peripherals.GPIO13, 
-        peripherals.GPIO15,
-    );
+    // lets try to get the interface for the display
+    let mut display = {
+        let backlight = peripherals.GPIO27;
+        let sclk = peripherals.GPIO13;
+        let mosi = peripherals.GPIO15;
+        let dc = peripherals.GPIO14;
+        let rst = peripherals.GPIO12;
+        let cs = peripherals.GPIO5;
+
+        StickDisplayBuilder::new(peripherals.SPI2, sclk, mosi)
+            .with_bl(backlight)
+            .with_dma(peripherals.DMA_SPI2)
+            .into_async()
+            .create_display(dc, rst, cs) 
+    };
 
 
     // Text
@@ -189,16 +188,7 @@ async fn main(spawner: Spawner) {
     //     .into_styled(style);
     
 
-    // let frame_buffer = watchy_m5::display::FRAME_BUFFER.init([0; watchy_m5::display::FRAME_BUFFER_SIZE]);
-    // {
-    //     let mut display = get_raw_fb(frame_buffer);
-    //     display.clear(colors[0]).unwrap();
-    // }
-    // a_display.show_raw_data(0, 0, watchy_m5::display::WIDTH, watchy_m5::display::HEIGHT, frame_buffer).await.unwrap();
-    // Clear the display initially
-    // display.clear(colors[0]).unwrap();
-
-    display_bl.set_high();        // let s = self.state;
+    display.on();
 
     
     let snd_tx = snd_channel.dyn_sender();

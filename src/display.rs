@@ -1,4 +1,5 @@
 
+use core::convert::Infallible;
 use core::fmt::Debug;
 
 use embedded_graphics::{
@@ -7,14 +8,15 @@ use embedded_graphics::{
     prelude::Dimensions
 };
 
-use embedded_hal_bus::spi::ExclusiveDevice;
+use embedded_hal_bus::spi::{DeviceError, ExclusiveDevice};
 use esp_hal::dma::{DmaChannelFor, DmaRxBuf, DmaTxBuf};
 use esp_hal::dma_buffers;
 use esp_hal::gpio::{Level, Output, OutputConfig, OutputPin};
-use esp_hal::spi::master::{AnySpi, Config, Spi};
+use esp_hal::spi::master::{AnySpi, Config, Spi, SpiDmaBus};
 use esp_hal::spi::Mode;
 use esp_hal::time::Rate;
 
+use mipidsi::interface::{Interface, InterfacePixelFormat, SpiError};
 use mipidsi::{
     interface,
     Builder,
@@ -60,38 +62,180 @@ pub const HEIGHT: u16 = 240;
 // Rgb565 uses 2 bytes per pixel
 // const PXL_SIZE: usize = 2;
 
-
-// type DisplayDelay = embedded_hal_bus::spi::NoDelay;
-type DisplayDelay = esp_hal::delay::Delay;
-
-type DisplayBus<'d> = esp_hal::spi::master::SpiDmaBus<'d, esp_hal::Async>;
-type DisplayDevice<'d> = ExclusiveDevice<DisplayBus<'d>, Output<'d>, DisplayDelay>;
-// pub type ADisplay<'d> = mipidsi::Display<mipidsi::interface::SpiInterface<'d, ExclusiveDevice<esp_hal::spi::master::Spi<'d, esp_hal::Async>, Output<'d>, DisplayDelay>, Output<'d>>, mipidsi::models::ST7789, Output<'d>>;
-pub type ADisplay<'d> = mipidsi::Display<mipidsi::interface::SpiInterface<'d, ExclusiveDevice<esp_hal::spi::master::SpiDmaBus<'d, esp_hal::Async>, Output<'d>, DisplayDelay>, Output<'d>>, mipidsi::models::ST7789, Output<'d>>;
-pub type BDisplay<'d> = mipidsi::Display<mipidsi::interface::SpiInterface<'d, DisplayDevice<'d>, Output<'d>>, mipidsi::models::ST7789, Output<'d>>;
+const BUFLEN: usize = 4096;
+static DISPLAY_BUF: StaticCell<[u8; BUFLEN]> = StaticCell::new();
 
 
-// struct Blah<Iface, Rst: embedded_hal::digital::OutputPin> 
-// where 
-//     Iface: mipidsi::interface::Interface,
-//     Rgb565: InterfacePixelFormat<<Iface as mipidsi::interface::Interface>::Word>
-// {
-//     d: mipidsi::Display<Iface, ST7789, Rst>,
-// }
-
-pub struct TDisplay<'d> {
-    d: ADisplay<'d>
+pub struct StickDisplayBuilder<'d, SBus> {
+    dc: Option<Output<'d>>,
+    rst: Option<Output<'d>>,
+    cs: Option<Output<'d>>,
+    bl: Option<Output<'d>>,
+    base_spi: SBus,
 }
 
-impl Dimensions for TDisplay<'_> {
+impl<'d> StickDisplayBuilder<'d, Spi<'d, esp_hal::Blocking>> {
+    pub fn new(spi_periph: impl esp_hal::spi::master::Instance + 'd, sclk: impl OutputPin + 'd, mosi: impl OutputPin + 'd) -> Self {
+        let base_spi = Spi::new(
+            spi_periph, 
+            Config::default()
+                .with_frequency(Rate::from_mhz(40))
+                .with_mode(Mode::_0)
+        ).unwrap()
+            .with_sck(sclk)
+            .with_mosi(mosi);
+
+        Self {
+            dc: None,
+            rst: None,
+            cs: None,
+            bl: None,
+            base_spi,
+        }
+    }
+}
+
+impl<'d> StickDisplayBuilder<'d, Spi<'d, esp_hal::Blocking>> {
+    pub fn into_async(self) -> StickDisplayBuilder<'d, Spi<'d, esp_hal::Async>> {
+        let s = self.base_spi.into_async();
+        StickDisplayBuilder::<'d, Spi<'d, esp_hal::Async>> {
+            base_spi: s,
+            dc: self.dc,
+            rst: self.rst,
+            cs: self.cs,
+            bl: self.bl, 
+        }
+    }
+}
+
+impl<'d> StickDisplayBuilder<'d, SpiDmaBus<'d, esp_hal::Blocking>> {
+    pub fn into_async(self) -> StickDisplayBuilder<'d, SpiDmaBus<'d, esp_hal::Async>> {
+        let s = self.base_spi.into_async();
+        StickDisplayBuilder::<'d, SpiDmaBus<'d, esp_hal::Async>> {
+            base_spi: s,
+            dc: self.dc,
+            rst: self.rst,
+            cs: self.cs,
+            bl: self.bl, 
+        }
+    }
+}
+
+impl<'d> StickDisplayBuilder<'d, Spi<'d, esp_hal::Blocking>> {
+    pub fn with_dma(self, dma_channel: impl DmaChannelFor<AnySpi<'d>>) -> StickDisplayBuilder<'d, SpiDmaBus<'d, esp_hal::Blocking>>  {
+        // DMA transfers need descriptors and buffers
+        #[allow(clippy::manual_div_ceil)]
+        let (rx_buffer, rx_descriptors, tx_buffer, tx_descriptors) = dma_buffers!(4, BUFLEN);
+        let dma_rx_buf = DmaRxBuf::new(rx_descriptors, rx_buffer).unwrap();
+        let dma_tx_buf = DmaTxBuf::new(tx_descriptors, tx_buffer).unwrap();
+
+        let base_spi = self.base_spi
+            .with_dma(dma_channel)            
+            .with_buffers(dma_rx_buf, dma_tx_buf);
+
+        StickDisplayBuilder::<'d, SpiDmaBus<'d, esp_hal::Blocking>> {
+            base_spi,
+            dc: self.dc,
+            rst: self.rst,
+            cs: self.cs,
+            bl: self.bl, 
+        }
+    }
+}
+
+impl<'d, SBus: embedded_hal::spi::SpiBus> StickDisplayBuilder<'d, SBus> {
+
+    pub fn with_bl(self, bl: impl OutputPin + 'd) -> StickDisplayBuilder<'d, SBus> {
+        let bl = Output::new(bl,Level::Low, OutputConfig::default());
+        Self {
+            dc: self.dc,
+            rst: self.rst,
+            cs: self.cs,
+            bl: Some(bl),
+            base_spi: self.base_spi,
+        }
+    }
+
+    pub fn create_display(self, dc: impl OutputPin + 'd, rst: impl OutputPin + 'd, cs: impl OutputPin + 'd) -> StickDisplay<'d, interface::SpiInterface<'d, ExclusiveDevice<SBus, Output<'d>, esp_hal::delay::Delay>, Output<'d>>, Output<'d>>{
+        let mut display_delay = esp_hal::delay::Delay::new();
+
+        let dc = Output::new(dc, Level::Low, OutputConfig::default());
+        let cs: Output<'_> = Output::new(cs, Level::High, OutputConfig::default());
+        let rst = Output::new(rst, Level::Low, OutputConfig::default());
+
+        let disp_device = ExclusiveDevice::new(self.base_spi, cs, display_delay).unwrap();
+
+        let disp_buf = DISPLAY_BUF.init([0_u8; BUFLEN]);
+        let di = interface::SpiInterface::new(disp_device, dc, disp_buf);
+
+        let rotation = Orientation::new().rotate(Rotation::Deg0);
+
+        let display: mipidsi::Display<interface::SpiInterface<'d, ExclusiveDevice<SBus, Output<'d>, esp_hal::delay::Delay>, Output<'d>>, ST7789, Output<'d>> = Builder::new(ST7789, di)
+            .reset_pin(rst)
+            .invert_colors(ColorInversion::Inverted)
+            .display_size(WIDTH, HEIGHT)
+            .display_offset(X_OFFSET, Y_OFFSET)
+            .orientation(rotation)
+            .init(&mut display_delay)
+            .unwrap();
+        StickDisplay::new(display, self.bl)
+    }
+
+}
+
+pub struct StickDisplay<'d, DI, OP> 
+where 
+    DI: Interface,
+    OP: embedded_hal::digital::OutputPin,
+    Rgb565: InterfacePixelFormat<<DI as Interface>::Word>
+{
+    d: mipidsi::Display<DI, ST7789, OP>,
+    bl: Option<Output<'d>>,
+}
+
+impl<'d, DI, OP> StickDisplay<'d, DI, OP>
+where 
+    DI: Interface,
+    OP: embedded_hal::digital::OutputPin,
+    Rgb565: InterfacePixelFormat<<DI as Interface>::Word>
+{
+    fn new(d: mipidsi::Display<DI, ST7789, OP>, bl: Option<Output<'d>>) -> Self {
+        Self { d, bl }
+    }
+
+    pub fn on(&mut self) {
+        if let Some(bl) = self.bl.as_mut() {
+            bl.set_high();
+        }
+    }
+
+    pub fn off(&mut self) {
+        if let Some(bl) = self.bl.as_mut() {
+            bl.set_low();
+        }
+    }
+
+}
+
+impl<DI, OP> Dimensions for StickDisplay<'_, DI, OP> 
+where 
+    DI: Interface,
+    OP: embedded_hal::digital::OutputPin,
+    Rgb565: InterfacePixelFormat<<DI as Interface>::Word>
+{
     fn bounding_box(&self) -> embedded_graphics::primitives::Rectangle {
         self.d.bounding_box()
     }
 }
 
-impl DrawTarget for TDisplay<'_> {
+impl<DI, OP> DrawTarget for StickDisplay<'_, DI, OP> 
+where 
+    DI: Interface<Error = SpiError<DeviceError<esp_hal::spi::Error, Infallible>, Infallible>>,
+    OP: embedded_hal::digital::OutputPin,
+    Rgb565: InterfacePixelFormat<<DI as Interface>::Word>
+{
     type Color = Rgb565;
-    type Error = mipidsi::interface::SpiError<embedded_hal_bus::spi::DeviceError<esp_hal::spi::Error, core::convert::Infallible>, core::convert::Infallible>;
+    type Error = SpiError<embedded_hal_bus::spi::DeviceError<esp_hal::spi::Error, core::convert::Infallible>, core::convert::Infallible>;
 
     fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
     where
@@ -100,85 +244,27 @@ impl DrawTarget for TDisplay<'_> {
     }
 }
 
-impl core::ops::DerefMut for TDisplay<'_> {
+impl<DI, OP> core::ops::DerefMut for StickDisplay<'_, DI, OP> 
+where 
+    DI: Interface,
+    OP: embedded_hal::digital::OutputPin,
+    Rgb565: InterfacePixelFormat<<DI as Interface>::Word>
+{
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.d
     }
 }
-impl<'d> core::ops::Deref for TDisplay<'d> {
-    type Target = ADisplay<'d>;
+impl<DI, OP> core::ops::Deref for StickDisplay<'_, DI, OP> 
+where 
+    DI: Interface,
+    OP: embedded_hal::digital::OutputPin,
+    Rgb565: InterfacePixelFormat<<DI as Interface>::Word>
+{
+    type Target = mipidsi::Display<DI, ST7789, OP>;
 
     fn deref(&self) -> &Self::Target {
         &self.d
     }
 }
 
-const BUFLEN: usize = 4096;
-static DISPLAY_BUF: StaticCell<[u8; BUFLEN]> = StaticCell::new();
-
-impl<'d> TDisplay<'d> {
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn new<SPI, DMACHAN>(p_spi: SPI, dma_channel: DMACHAN, dc: impl OutputPin + 'd, rst: impl OutputPin + 'd, cs: impl OutputPin + 'd, sclk: impl OutputPin + 'd, mosi: impl OutputPin + 'd) -> Self 
-    where 
-        SPI: esp_hal::spi::master::Instance + 'd,
-        DMACHAN: DmaChannelFor<AnySpi<'d>>,
-    {
-        let display_dc = Output::new(dc, Level::Low, OutputConfig::default());
-        let display_rst = Output::new(rst, Level::Low, OutputConfig::default());
-        
-        // DMA transfers need descriptors and buffers
-        let (rx_buffer, rx_descriptors, tx_buffer, tx_descriptors) = dma_buffers!(4, BUFLEN);
-        let dma_rx_buf = DmaRxBuf::new(rx_descriptors, rx_buffer).unwrap();
-        let dma_tx_buf = DmaTxBuf::new(tx_descriptors, tx_buffer).unwrap();
-
-        let display_spi = Spi::new(
-            p_spi, 
-            Config::default()
-                .with_frequency(Rate::from_mhz(40))
-                .with_mode(Mode::_0)
-        ).unwrap()
-        .with_sck(sclk)
-        .with_mosi(mosi)
-        .with_dma(dma_channel)
-        .with_buffers(dma_rx_buf, dma_tx_buf)
-        .into_async();
-
-        let mut display_delay = esp_hal::delay::Delay::new();
-        let display_cs: Output<'_> = Output::new(cs, Level::High, OutputConfig::default());
-
-        let disp_device = ExclusiveDevice::new(display_spi, display_cs, display_delay).unwrap();
-
-        let disp_buf = DISPLAY_BUF.init([0_u8; BUFLEN]);
-
-        let di = interface::SpiInterface::new(disp_device, display_dc, disp_buf);
-        let rotation = Orientation::new().rotate(Rotation::Deg0);
-        let display = Builder::new(ST7789, di)
-            .reset_pin(display_rst)
-            .invert_colors(ColorInversion::Inverted)
-            .display_size(WIDTH, HEIGHT)
-            .display_offset(X_OFFSET, Y_OFFSET)
-            .orientation(rotation)
-            .init(&mut display_delay)
-            .unwrap();
-
-        Self { d: display  }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn create<SPI, DMACHAN, DC, RST, CS, SCLK, MOSI>(p_spi: SPI, dma_channel: DMACHAN, dc: DC, rst: RST, cs: CS, sclk: SCLK, mosi: MOSI) -> Result<Self, DisplayError> 
-    where 
-        SPI: esp_hal::spi::master::Instance + 'd,
-        DMACHAN: DmaChannelFor<AnySpi<'d>>,
-        DC: OutputPin + 'd,
-        RST: OutputPin + 'd,
-        CS: OutputPin + 'd,
-        SCLK: OutputPin + 'd,
-        MOSI: OutputPin + 'd
-    {
-        Ok(Self::new(p_spi, dma_channel, dc, rst, cs, sclk, mosi))
-    }
-
-
-}
 

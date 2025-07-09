@@ -7,11 +7,12 @@ use defmt::info;
 use embedded_graphics::{
     geometry::{AnchorPoint, AnchorX, AnchorY}, 
     pixelcolor::{BinaryColor, Rgb565}, 
-    primitives::{Circle, Line, Polyline, PrimitiveStyle, Rectangle, StyledDrawable, Triangle}, 
+    primitives::{self, Circle, Line, Polyline, PrimitiveStyle, Rectangle, Styled, StyledDrawable, Triangle}, 
     Drawable
 };
 use embedded_graphics::prelude::*;
 use micromath::{vector::{Vector, Vector2d}, F32};
+use thiserror_no_std::Error;
 
 /// Converts a polar coordinate (angle/distance) into an (X, Y) coordinate centered around the
 /// center of the circle.
@@ -163,6 +164,44 @@ pub trait SurfaceNormal {
 
     /// distance from nearest surface to point
     fn distance(&self, point: Point) -> i32;
+}
+
+impl ClosestEdge for Rectangle {
+    fn closest_edge(&self, point: Point) -> Line {
+        let vertices = [
+            self.anchor_point(AnchorPoint::TopLeft),
+            self.anchor_point(AnchorPoint::TopRight),
+            self.anchor_point(AnchorPoint::BottomRight),
+            self.anchor_point(AnchorPoint::BottomLeft)
+        ];
+        let mut closest1 = vertices[0];
+        let mut closest2 = vertices[1];
+
+        if closest1.distance_squared(point) > closest2.distance_squared(point) {
+            core::mem::swap(&mut closest1, &mut closest2);
+        }
+
+        for &p in vertices.iter().skip(2) {
+            let dist = p.distance_squared(point);
+            if dist < closest1.distance_squared(point) {
+                closest2 = closest1;
+                closest1 = p;
+            } else if dist < closest2.distance_squared(point) {
+                closest2 = p;
+            }
+        }
+        Line::new(closest1, closest2)
+    }
+}
+
+impl SurfaceNormal for Rectangle {
+    fn surface_normal(&self, point: Point) -> GfxVec {
+        self.closest_edge(point).surface_normal(point)
+    }
+    
+    fn distance(&self, point: Point) -> i32 {
+        self.closest_edge(point).distance(point)
+    }
 }
 
 impl SurfaceNormal for Line {
@@ -323,111 +362,6 @@ impl SurfaceNormal for Circle {
         self.center().distance(point) - (self.diameter / 2) as i32
     }
 }
-/// Moving objects need to have:
-///  - a center point,
-///  - a width (distance from center point to edge of object)
-///  - a unit vector indicating direction (or maybe a vector for direction and speed)
-///  - a reference to the container they are moving within
-///  - a move function which changes position by applying the direction vector
-/// 
-pub trait MovableObject: SurfaceNormal + Drawable {
-// pub trait MovableObject: Transform + SurfaceNormal + Drawable {
-    /// get the center point of the object
-    fn center(&self) -> Point;
-
-    /// get the distance from the center to the edge
-    fn half_width(&self) -> u32;
-
-    /// a vector representing direction and speed
-    fn get_velocity(&self) -> Point;
-
-    fn set_velocity(&mut self, d: Point);
-
-    /// get the bounding container
-    fn container(&self) -> &Rectangle;
-
-    fn simple_distance(&self, other: &Self) -> i32 {
-        let mut simple_distance = self.center().distance(other.center());
-        simple_distance -= (self.half_width()+other.half_width()) as i32;
-        simple_distance
-    }
-
-    fn translate_mut(&mut self, delta: Point);
-
-    /// move object by applying the direction vector, while checking against containing rectangle
-    fn move_object(&mut self) {
-        let mut delta = self.get_velocity();
-        if !(delta.x == 0 && delta.y == 0 ) {
-            let center = self.center();
-            let width = self.half_width() as i32;
-    
-            // check against container
-            let r = self.container();
-            let top_left = r.top_left;
-            let bottom_right = Point::new(top_left.x + r.size.width as i32, top_left.y + r.size.height as i32);
-    
-            if (center.x - top_left.x) <= width || (bottom_right.x - center.x) <= width {
-                // bounce off x axis
-                delta.x = -delta.x;
-            }
-            if (center.y - top_left.y) <= width || (bottom_right.y - center.y) <= width {
-                // bounce off y axis
-                delta.y = -delta.y;
-            }
-    
-            self.set_velocity(delta);
-            self.translate_mut(delta);
-        }
-
-    }
-
-    // incident vector is the vector before collision
-    fn incident_vector(&self) -> GfxVec {
-        GfxVec::from(self.get_velocity())
-    }
-
-    // compute the reflection vector
-    fn reflected_vector(&self, surface_normal: GfxVec) -> GfxVec {
-        let incident_vector = self.incident_vector();
-        let twice_dot_product = 2.0 * incident_vector.dot(surface_normal.into());
-        let x = incident_vector.x - (twice_dot_product * surface_normal.x);
-        let y = incident_vector.y - (twice_dot_product * surface_normal.y);
-        GfxVec(Vector2d { x, y })
-    }
-
-    /// update vectors of both objects, assume collision
-    fn collide_update(&mut self, other: &mut Self) {
-        let my_reflection = self.reflected_vector(other.surface_normal(self.center()));
-        let other_reflection = other.reflected_vector(self.surface_normal(other.center()));
-        self.set_velocity(my_reflection.into());
-        other.set_velocity(other_reflection.into());
-    }
-
-    // fn edge_nearest_point(&self, p: Point) -> Point {
-    //     let delta = Line::new(self.center(), p).delta();
-    //     let radius = self.width() as i32;
-    //     let center = self.center();
-    //     Point::new((center.x + delta.x) / radius, (center.y + delta.y) / radius)
-    // }
-    
-    // /// distance between edge of this object and edge of other object
-    // fn distance(&self, other: &Self) -> i32 {
-    //     let this_edge = self.edge_nearest_point(other.center());
-    //     let other_edge = other.edge_nearest_point(self.center());
-    //     let delta = this_edge - other_edge;
-    //     (delta.x.pow(2) + delta.y.pow(2)).isqrt()
-    // }
-
-    // fn is_collision(&self, other: &Self) -> bool {
-    //     let delta = self.center() - other.center();
-    //     let center_distance = (delta.x.pow(2) + delta.y.pow(2)).isqrt();
-    //     (center_distance - (self.width() + other.width()) as i32) <= 0
-    // }
-
-}
-
-
-use thiserror_no_std::Error;
 
 
 #[derive(Debug, Error, defmt::Format)]
@@ -438,21 +372,113 @@ pub enum SpriteError {
     OtherError,
 }
 
-#[derive(Clone, Hash, Debug, Default, defmt::Format)]
-pub struct Sprite<C: PixelColor, P> 
-where 
-    P: Movable + StyledDrawable<PrimitiveStyle<C>, Color = C, Output = ()>,
+pub trait Movable: Primitive + SurfaceNormal + Transform {
+    // fn move_by(&mut self, by: Point);
+}
+
+// impl Movable for Circle {
+//     fn move_by(&mut self, by: Point) {
+//         self.top_left += by;
+//     }
+// }
+
+// impl Movable for Rectangle {
+//     fn move_by(&mut self, by: Point) {
+//         self.top_left += by;
+//     }
+// }
+
+
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, defmt::Format)]
+pub enum SpritePrimitive<'a> 
+// where 
+//     C: PixelColor,
+{
+    Line(primitives::Line),
+    Circle(primitives::Circle),
+    Rectangle(primitives::Rectangle),
+    Polyline(primitives::Polyline<'a>),
+}
+
+impl<'a> Dimensions for SpritePrimitive<'a> {
+    fn bounding_box(&self) -> Rectangle {
+        match self {
+            SpritePrimitive::Line(line) => line.bounding_box(),
+            SpritePrimitive::Circle(circle) => circle.bounding_box(),
+            SpritePrimitive::Rectangle(rectangle) => rectangle.bounding_box(),
+            SpritePrimitive::Polyline(polyline) => polyline.bounding_box(),
+        }
+    }
+}
+
+impl<'a> SurfaceNormal for SpritePrimitive<'a> {
+    fn surface_normal(&self, point: Point) -> GfxVec {
+        match self {
+            SpritePrimitive::Line(line) => line.surface_normal(point),
+            SpritePrimitive::Circle(circle) => circle.surface_normal(point),
+            SpritePrimitive::Rectangle(rectangle) => rectangle.surface_normal(point),
+            SpritePrimitive::Polyline(polyline) => polyline.surface_normal(point),
+        }
+    }
+
+    fn distance(&self, point: Point) -> i32 {
+        match self {
+            SpritePrimitive::Line(line) => line.distance(point),
+            SpritePrimitive::Circle(circle) => circle.distance(point),
+            SpritePrimitive::Rectangle(rectangle) => rectangle.distance(point),
+            SpritePrimitive::Polyline(polyline) => polyline.distance(point),
+        }
+    }
+}
+
+impl<'a> From<Line> for SpritePrimitive<'a> {
+    fn from(value: Line) -> Self {
+        Self::Line(value)
+    }
+}
+impl<'a> From<Circle> for SpritePrimitive<'a> {
+    fn from(value: Circle) -> Self {
+        Self::Circle(value)
+    }
+}
+impl<'a> From<Rectangle> for SpritePrimitive<'a> {
+    fn from(value: Rectangle) -> Self {
+        Self::Rectangle(value)
+    }
+}
+impl<'a> From<Polyline<'a>> for SpritePrimitive<'a> {
+    fn from(value: Polyline<'a>) -> Self {
+        Self::Polyline(value)
+    }
+}
+
+
+impl<'a> Transform for SpritePrimitive<'a> {
+    fn translate(&self, by: Point) -> Self {
+        match self {
+            SpritePrimitive::Line(line) => line.translate(by).into(),
+            SpritePrimitive::Circle(circle) => circle.translate(by).into(),
+            SpritePrimitive::Rectangle(rectangle) => rectangle.translate(by).into(),
+            SpritePrimitive::Polyline(polyline) => polyline.translate(by).into(),
+        }
+    }
+
+    fn translate_mut(&mut self, by: Point) -> &mut Self {
+        *self = self.translate(by);
+        self
+    }
+}
+
+#[derive(Clone, Copy, Hash, Debug, defmt::Format)]
+pub struct Sprite<'a, C: PixelColor>
 {
     style: PrimitiveStyle<C>,
     line_style: PrimitiveStyle<C>,
-    shape: P,
+    shape: SpritePrimitive<'a>,
     velocity: Point,
 }
 
-impl<C: PixelColor, P> Drawable for Sprite<C, P>
-where 
-    P: Movable + StyledDrawable<PrimitiveStyle<C>, Color = C, Output = ()>,
-{
+impl<'a, C: PixelColor> Drawable for Sprite<'a, C> {
     type Color = C;
 
     type Output = ();
@@ -460,56 +486,68 @@ where
     fn draw<D>(&self, target: &mut D) -> Result<Self::Output, D::Error>
     where
         D: DrawTarget<Color = Self::Color> {
-        self.shape.draw_styled(&self.style, target)?;
+        match self.shape {
+            SpritePrimitive::Line(line) => line.into_styled(self.style()).draw(target)?,
+            SpritePrimitive::Circle(circle) => circle.into_styled(self.style()).draw(target)?,
+            SpritePrimitive::Rectangle(rectangle) => rectangle.into_styled(self.style()).draw(target)?,
+            SpritePrimitive::Polyline(polyline) => polyline.into_styled(self.style()).draw(target)?,
+        };
+        Line::with_delta(self.center(), self.velocity()).draw_styled(&self.line_style, target)?;
         Ok(())
     }
 }
 
-impl<C, P> Sprite<C, P> 
-where 
-    C: PixelColor,
-    P: Movable + StyledDrawable<PrimitiveStyle<C>, Color = C, Output = ()>,
-{
-    pub fn new(style: PrimitiveStyle<C>, line_style: PrimitiveStyle<C>, shape: P, velocity: Point) -> Self {
-        Self { style, line_style, shape, velocity }
+impl<'a, C: PixelColor> Sprite<'a, C> {
+    pub fn new(style: PrimitiveStyle<C>, line_style: PrimitiveStyle<C>, shape: impl Into<SpritePrimitive<'a>>) -> Self {
+        Self { style, line_style, shape: shape.into(), velocity: Point::zero() }
     }
         
+    #[inline]
     pub fn style(&self) -> PrimitiveStyle<C> {
         self.style
     }
     
+    #[inline]
     pub fn style_mut(&mut self) -> &mut PrimitiveStyle<C> {
         &mut self.style
     }
     
+    #[inline]
     pub fn set_style(&mut self, style: PrimitiveStyle<C>) {
         self.style = style;
     }
     
+    #[inline]
     pub fn set_line_style(&mut self, line_style: PrimitiveStyle<C>) {
         self.line_style = line_style;
     }
     
+    #[inline]
     pub fn line_style_mut(&mut self) -> &mut PrimitiveStyle<C> {
         &mut self.line_style
     }
     
+    #[inline]
     pub fn line_style(&self) -> PrimitiveStyle<C> {
         self.line_style
     }
     
+    #[inline]
     pub fn velocity(&self) -> Point {
         self.velocity
     }
     
+    #[inline]
     pub fn velocity_mut(&mut self) -> &mut Point {
         &mut self.velocity
     }
     
+    #[inline]
     pub fn set_velocity(&mut self, velocity: Point) {
         self.velocity = velocity;
     }
 
+    #[inline]
     pub fn center(&self) -> Point {
         self.shape.bounding_box().center()
     }
@@ -545,16 +583,60 @@ where
         let twice_dot_product = 2.0 * incident_vector.dot(surface_normal.into());
         let x = incident_vector.x - (twice_dot_product * surface_normal.x);
         let y = incident_vector.y - (twice_dot_product * surface_normal.y);
-        GfxVec(Vector2d { x, y })
+        let v = GfxVec(Vector2d { x, y });
+        info!("new speed: {}", v.0.magnitude());
+        v
     }
 
-    pub fn collide_update(&mut self, other: &mut Self) {
-        let my_reflection = self.reflected_vector(other.shape.surface_normal(self.center()));
-        let other_reflection = other.reflected_vector(self.shape.surface_normal(other.center()));
-        self.set_velocity(my_reflection.into());
-        other.set_velocity(other_reflection.into());
+    fn collission_update(sprite1: &mut Sprite<'a, C>, sprite2: &mut Sprite<'a, C>) -> bool {
+        let collision_distance = 1;
+        if sprite1.shape != sprite2.shape && sprite1.simple_distance(sprite2) <= collision_distance {
+            if sprite1.is_moving() {
+                let my_reflection: Point = sprite1.reflected_vector(sprite2.shape.surface_normal(sprite1.center())).into();
+                info!("Collision Sprite1: vel1: {} vel2: {}", sprite1.velocity, my_reflection);
+                sprite1.set_velocity(my_reflection);
+                sprite1.move_object();
+            }
+            if sprite2.is_moving() {
+                let other_reflection: Point = sprite2.reflected_vector(sprite1.shape.surface_normal(sprite2.center())).into();
+                info!("Collision Sprite2: vel1: {} vel2: {}", sprite2.velocity, other_reflection);
+                sprite2.set_velocity(other_reflection);
+                sprite2.move_object();
+            }
+            true
+        } else {
+            false
+        }
+    }
+    pub fn collission_update_bounded(sprite1: &mut Sprite<'a, C>, sprite2: &mut Sprite<'a, C>, boundary: & impl Dimensions) -> bool {
+        let collision_distance = 1;
+        if sprite1.shape != sprite2.shape && sprite1.simple_distance(sprite2) <= collision_distance {
+            if sprite1.is_moving() {
+                let my_reflection: Point = sprite1.reflected_vector(sprite2.shape.surface_normal(sprite1.center())).into();
+                info!("Collision Sprite1: vel1: {} vel2: {}", sprite1.velocity, my_reflection);
+                sprite1.set_velocity(my_reflection);
+                sprite1.move_object_bounded(boundary);
+            }
+            if sprite2.is_moving() {
+                let other_reflection: Point = sprite2.reflected_vector(sprite1.shape.surface_normal(sprite2.center())).into();
+                info!("Collision Sprite2: vel1: {} vel2: {}", sprite2.velocity, other_reflection);
+                sprite2.set_velocity(other_reflection);
+                sprite2.move_object_bounded(boundary);
+            }
+            true
+        } else {
+            false
+        }
     }
 
+    #[inline]
+    pub fn is_moving(&self) -> bool {
+        self.velocity != Point::zero()
+    }
+    #[inline]
+    pub fn is_stationary(&self) -> bool {
+        self.velocity == Point::zero()
+    }
     /// move object by applying the direction vector, while checking against containing rectangle
     pub fn move_object_bounded(&mut self, boundary: & impl Dimensions) {
         let mut delta = self.velocity();
@@ -577,7 +659,7 @@ where
             }
     
             self.set_velocity(delta);
-            self.shape.move_by(delta);
+            self.shape.translate_mut(delta);
         }
     }
 
@@ -585,61 +667,56 @@ where
     pub fn move_object(&mut self) {
         let delta = self.velocity();
         if !(delta.x == 0 && delta.y == 0 ) {
-            self.shape.move_by(delta);
+            self.shape.translate_mut(delta);
         }
     }
 
 }
 
-    /// update vectors of both objects, assume collision
-pub trait Movable: Primitive + SurfaceNormal {
-    fn move_by(&mut self, by: Point);
-}
-
-impl Movable for Circle {
-    fn move_by(&mut self, by: Point) {
-        self.top_left += by;
-    }
-}
-
 // #[derive(Debug, Eq, PartialEq, Ord, PartialOrd)]
 #[derive(Clone, Hash, Debug, Default, defmt::Format)]
-pub struct SpriteContainer<C, P> 
-where 
-    C: PixelColor,
-    P: Movable + StyledDrawable<PrimitiveStyle<C>, Color = C, Output = ()>,
-{
+pub struct SpriteContainer<'a, C: PixelColor> {
     boundary: Rectangle,
-    sprites: Vec<Sprite<C,P>>,
+    sprites: Vec<Sprite<'a, C>>,
     _phantom: PhantomData<C>,
 }
 
-impl<C: PixelColor, P: Movable> SpriteContainer<C, P>
-where 
-    C: PixelColor,
-    P: Movable + StyledDrawable<PrimitiveStyle<C>, Color = C, Output = ()>,
-{
+impl<'a, C: PixelColor> SpriteContainer<'a, C> {
     pub fn new(boundary: Rectangle) -> Self {
         let sprites = Vec::new();
         Self { boundary, sprites, _phantom: PhantomData }
     }
 
-    pub fn add_sprite(&mut self, sprite:Sprite<C, P>) {
+    pub fn add_sprite(&mut self, sprite: Sprite<'a, C>) {
         self.sprites.push(sprite);
     }
 
     pub fn update_positions(&mut self) {
-        for sprite in self.sprites.iter_mut() {
-            sprite.move_object();
+        let max_idx = self.sprites.len();
+        let sprites = self.sprites.as_mut_slice();
+        for i in 0..max_idx {
+            let (_a, b) = sprites.split_at_mut(i);
+            if i + 1 < max_idx {
+                let (b_first, b_second) = b.split_at_mut(1);
+                let first = &mut b_first[0];
+                let second = &mut b_second[0];                    
+                if Sprite::collission_update(first, second) {
+                    // first.move_object_bounded(&self.boundary);
+                }
+            } 
+            if i == max_idx {
+                let last = &mut b[0];
+                let first = &mut _a[0];
+                if Sprite::collission_update(last, first) {
+                    // last.move_object_bounded(&self.boundary);
+                }
+            }
+            b[0].move_object_bounded(&self.boundary);
         }
     }
 }
 
-impl<C, P> Drawable for SpriteContainer<C, P>
-where 
-    C: PixelColor,
-    P: Movable + StyledDrawable<PrimitiveStyle<C>, Color = C, Output = ()>,
-{
+impl<'a, C: PixelColor> Drawable for SpriteContainer<'a, C> {
     type Color = C;
 
     type Output = ();
@@ -651,63 +728,6 @@ where
             sprite.draw(target)?;
         }
         Ok(())
-    }
-}
-
-pub struct BouncyBall<C: PixelColor> {
-    style: PrimitiveStyle<C>,
-    line_style: PrimitiveStyle<C>,
-    c: Circle,
-    pub vector: Point,
-    container: Rectangle,
-}
-
-impl<C: PixelColor> SurfaceNormal for BouncyBall<C> {
-    fn surface_normal(&self, point: Point) -> GfxVec {
-        self.c.surface_normal(point)
-    }
-    
-    fn distance(&self, point: Point) -> i32 {
-        self.center().distance(point) - (self.c.diameter/2) as i32
-    }
-}
-
-impl<C: PixelColor> MovableObject for BouncyBall<C> {
-    fn center(&self) -> Point {
-        self.center()
-    }
-
-    fn half_width(&self) -> u32 {
-        self.diameter() / 2
-    }
-
-    fn get_velocity(&self) -> Point {
-        self.vector.into()
-    }
-
-    fn set_velocity(&mut self, d: Point) {
-        self.vector = d;
-    }
-
-    fn container(&self) -> &Rectangle {
-        &self.container
-    }
-    
-    fn translate_mut(&mut self, delta: Point) {
-        self.c.translate_mut(delta);
-    }
-
-}    
-
-impl<C: PixelColor> Default for BouncyBall<C> {
-    fn default() -> Self {
-        Self { 
-            style: Default::default(), 
-            line_style: Default::default(), 
-            c: Default::default(), 
-            vector: Default::default(),
-            container: Rectangle::zero(), 
-        }
     }
 }
 
@@ -845,8 +865,7 @@ impl From<Point> for GfxPoint {
 
 fn normalize_vector2d_f32(a_vec: Vector2d<f32>) -> Vector2d<f32> {
     let mag = a_vec.magnitude();
-    let normal_vector = Vector2d { x: a_vec.x / mag, y: a_vec.y / mag };
-    normal_vector
+    Vector2d { x: a_vec.x / mag, y: a_vec.y / mag }
 }
 
 
@@ -895,48 +914,6 @@ pub trait HasVertices {
 // }
 
 
-impl<C: PixelColor> BouncyBall<C> {
-    pub fn new(style: PrimitiveStyle<C>, c: Circle, dir_point: Point) -> Self {        
-        Self { style, c, vector: dir_point, ..Default::default() }
-    }
-
-    pub fn set_boundary(&mut self, b: Rectangle) -> &mut BouncyBall<C> {
-        self.container = b;
-        self
-    }
-
-    pub fn set_line_style(&mut self, line_style: PrimitiveStyle<C>) -> &mut BouncyBall<C> {
-        self.line_style = line_style;
-        self
-    }
-    
-    pub fn set_direction(&mut self, d: Point) -> &mut BouncyBall<C> {
-        self.vector = d;
-        self
-    }
-    pub fn set_direction_from_angle(&mut self, direction: Angle) -> &mut BouncyBall<C> {
-        let diameter = F32(self.c.diameter as f32);
-        let radius = (diameter / 2.0) + 1.0;
-        let angle = F32::from(direction.to_radians());
-        let delta = Point::new(
-            (angle.sin().0 * radius).0 as i32,
-            -(angle.cos().0 * radius).0 as i32,
-        );
-        self.vector = delta;
-        self
-    }
-
-    /// Return the center point of the circle
-    pub fn center(&self) -> Point {
-        self.bounding_box().center()
-    }
-
-    pub fn diameter(&self) -> u32 {
-        self.c.diameter
-    }
-    
-}
-
 pub fn intersect_lines(first_line: Line, other_line: Line) -> Option<Point> {        
     let a1 = F32((first_line.end.y - first_line.start.y) as f32);
     let b1 = F32((first_line.start.x - first_line.end.x) as f32);
@@ -960,51 +937,4 @@ pub fn intersect_lines(first_line: Line, other_line: Line) -> Option<Point> {
     })
 }
 
-
-impl<C: PixelColor> Transform for BouncyBall<C> {
-    fn translate(&self, by: Point) -> Self {
-        Self { 
-            c: self.c.translate(by), 
-            ..*self 
-        }
-    }
-
-    fn translate_mut(&mut self, by: Point) -> &mut Self {
-        self.c.translate_mut(by);
-        self
-    }
-}
-
-impl<C: PixelColor> Drawable for BouncyBall<C> {
-    type Color = C;
-
-    type Output = ();
-
-    fn draw<D>(&self, target: &mut D) -> Result<Self::Output, D::Error>
-    where
-        D: embedded_graphics::prelude::DrawTarget<Color = Self::Color> 
-    {
-        self.c.draw_styled(&self.style, target)?;
-        Line::with_delta(self.c.center(), self.vector).draw_styled(&self.line_style, target)
-    }
-}
-
-impl<C: PixelColor> Dimensions for BouncyBall<C> {
-    fn bounding_box(&self) -> Rectangle {
-        self.c.bounding_box()
-    }
-}
-
-impl BouncyBall<Rgb565> {    
-    /// Create a new circle centered around a given point with a specific diameter
-    pub fn with_center(center: Point, diameter: u32) -> Self {
-        let s = PrimitiveStyle::with_fill(Rgb565::RED);
-        let c = Circle::with_center(center, diameter);
-        Self { 
-            c, 
-            style: s,
-            ..Default::default()
-        }
-    }
-}
 

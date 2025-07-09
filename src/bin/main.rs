@@ -18,7 +18,9 @@ use pcf8563::Pcf8563;
 
 use rand::{Rng, SeedableRng};
 use static_cell::StaticCell;
-use watchy_m5::{buttons::{btn_task, initialize_buttons, INPUT_BUTTONS}, display::{StickDisplay, StickDisplayBuilder, HEIGHT, WIDTH}, gfx::{BouncyBall, MovableObject, Sprite, SpriteContainer}};
+use watchy_m5::buttons::{btn_task, initialize_buttons, INPUT_BUTTONS};
+use watchy_m5::display::{StickDisplay, StickDisplayBuilder, HEIGHT, WIDTH};
+use watchy_m5::gfx::{Sprite, SpriteContainer};
 use watchy_m5::buzzer::{Buzzer, BuzzerChannel, BuzzerState};
 use watchy_m5::music::Song;
 use watchy_m5::player::{player_task, PlayerCmd, Player};
@@ -333,7 +335,8 @@ async fn display_task_worker(mut display: StickDrawTarget<'static>, mut esp_rng:
     info!("bounce_box: {:?}", bounce_box);
 
     let circle = Circle::with_center(bounce_box.bounding_box().center(), 15);
-    let mut ball = Sprite::new(fill, thin_stroke, circle, Point::zero());
+    let mut ball = Sprite::new(fill, thin_stroke, circle.translate(Point { x: 30, y: 25 }));
+    let mut ball2 = Sprite::new(fill, thin_stroke, circle.translate(Point { x: -30, y: -25 }));
     // let mut ball: BouncyBall<Rgb565> = BouncyBall::new(fill, circle, Point::zero());
     ball.set_line_style(PrimitiveStyle::with_stroke(Rgb565::BLACK, 1));
     // ball.set_boundary(bounce_box);
@@ -343,10 +346,13 @@ async fn display_task_worker(mut display: StickDrawTarget<'static>, mut esp_rng:
     
     display.on();
 
-    
     ball.set_direction_from_angle(Angle::from_degrees(fun_rng.random_range(0..360) as f32));
+    ball2.set_direction_from_angle(Angle::from_degrees(fun_rng.random_range(0..360) as f32));
     let mut sprite_container = SpriteContainer::new(bounce_box);
     sprite_container.add_sprite(ball);
+    sprite_container.add_sprite(ball2);
+    let stationary = Sprite::new(fill, thick_stroke, Rectangle::with_center(bounce_box.bounding_box().center(), Size::new_equal(25)));
+    sprite_container.add_sprite(stationary);
     // let bounce_perimeter: Vec<Point> = bounce_box.pixels().map(|p| p.0).collect();
     // let mut bounce_line = {
     //     let p = fun_rng.random_range(0..bounce_perimeter.len());
@@ -393,6 +399,12 @@ async fn display_task_worker(mut display: StickDrawTarget<'static>, mut esp_rng:
 
         if last_bounce_tick.elapsed() >= Duration::from_millis(40) {
             sprite_container.update_positions();
+            let bounce_box = bounce_box.into_styled(bb_style);
+            if let Err(_e) = bounce_box.draw(&mut ball_canvas) {
+                error!("error drawing bounce_box");
+                // return Err(_e);
+            }
+
             let _ = sprite_container.draw(&mut ball_canvas);
             // if let Err(_e) = ball_logic(&mut ball_canvas, &bounce_box, bb_style, &mut ball) {
             //     error!("problem drawing ball");
@@ -405,7 +417,7 @@ async fn display_task_worker(mut display: StickDrawTarget<'static>, mut esp_rng:
     }
 }
 
-fn ball_logic<D>(target: &mut D, bounce_box: &Rectangle, bb_style: PrimitiveStyle<Rgb565>, ball: &mut Sprite<Rgb565, Circle>) -> Result<(), <D as DrawTarget>::Error>
+fn ball_logic<D>(target: &mut D, bounce_box: &Rectangle, bb_style: PrimitiveStyle<Rgb565>, ball: &mut Sprite<Rgb565>) -> Result<(), <D as DrawTarget>::Error>
 where
     D: embedded_graphics::prelude::DrawTarget<Color = Rgb565> 
 {

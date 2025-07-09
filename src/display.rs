@@ -63,6 +63,7 @@ pub const HEIGHT: u16 = 240;
 // const PXL_SIZE: usize = 2;
 
 const BUFLEN: usize = 4096;
+const DMA_BUFLEN: usize = 4096;
 static DISPLAY_BUF: StaticCell<[u8; BUFLEN]> = StaticCell::new();
 
 
@@ -125,7 +126,7 @@ impl<'d> StickDisplayBuilder<'d, Spi<'d, esp_hal::Blocking>> {
     pub fn with_dma(self, dma_channel: impl DmaChannelFor<AnySpi<'d>>) -> StickDisplayBuilder<'d, SpiDmaBus<'d, esp_hal::Blocking>>  {
         // DMA transfers need descriptors and buffers
         #[allow(clippy::manual_div_ceil)]
-        let (rx_buffer, rx_descriptors, tx_buffer, tx_descriptors) = dma_buffers!(4, BUFLEN);
+        let (rx_buffer, rx_descriptors, tx_buffer, tx_descriptors) = dma_buffers!(4, DMA_BUFLEN);
         let dma_rx_buf = DmaRxBuf::new(rx_descriptors, rx_buffer).unwrap();
         let dma_tx_buf = DmaTxBuf::new(tx_descriptors, tx_buffer).unwrap();
 

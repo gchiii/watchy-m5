@@ -3,24 +3,22 @@
 
 use defmt::{error, info, trace};
 use embassy_executor::Spawner;
-use embassy_time::{Duration, Timer};
+use embassy_time::{Duration, Instant, Timer};
+use embedded_canvas::Canvas;
 use embedded_hal_bus::i2c::RefCellDevice;
 
+use embedded_layout::{align::{horizontal, vertical, Align}, prelude::Chain, View};
 use esp_alloc::HeapStats;
 use esp_hal::{
-    clock::CpuClock, 
-    gpio::{Input, InputConfig, Io, Level, Output, OutputConfig}, 
-    handler, 
-    i2c::master::{BusTimeout, Config as I2cConfig, I2c}, 
-    ledc::Ledc, 
-    ram, time::Rate, timer::timg::TimerGroup
+    clock::CpuClock, gpio::{Input, InputConfig, Io, Level, Output, OutputConfig}, handler, i2c::master::{BusTimeout, Config as I2cConfig, I2c}, ledc::Ledc, ram, time::Rate, timer::timg::TimerGroup
 };
     
 use mpu6886::Mpu6886;
 use pcf8563::Pcf8563;
 
+use rand::{Rng, SeedableRng};
 use static_cell::StaticCell;
-use watchy_m5::{buttons::{btn_task, initialize_buttons, INPUT_BUTTONS}, display::StickDisplayBuilder};
+use watchy_m5::{buttons::{btn_task, initialize_buttons, INPUT_BUTTONS}, display::{StickDisplay, StickDisplayBuilder, HEIGHT, WIDTH}, gfx::{BouncyBall, MovableObject, Sprite, SpriteContainer}};
 use watchy_m5::buzzer::{Buzzer, BuzzerChannel, BuzzerState};
 use watchy_m5::music::Song;
 use watchy_m5::player::{player_task, PlayerCmd, Player};
@@ -32,32 +30,35 @@ use embassy_sync::
 
 use {esp_backtrace as _, esp_println as _};
 
-use core::{cell::RefCell, ops::DerefMut};
+use core::cell::RefCell;
 use embedded_graphics::{
-    mono_font::{ascii::FONT_10X20, MonoTextStyle},
-    pixelcolor::Rgb565,
-    prelude::*,
-    text::Text,
+    prelude::*, 
+    geometry::AnchorX, 
+    mono_font::{ascii::FONT_10X20, MonoTextStyle}, 
+    pixelcolor::Rgb565, 
+    primitives::{Circle, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle, StrokeAlignment}, 
+    text::Text
 };
 
+use embedded_text::{
+    alignment::HorizontalAlignment,
+    style::{HeightMode, TextBoxStyleBuilder},
+    TextBox,
+};
+// use embedded_layout::{layout::linear::LinearLayout, prelude::*};
 
 extern crate alloc;
 
 
-/// Constants used on this stick
-const DISPLAY_WIDTH: u16 = 135;
-const DISPLAY_HEIGHT: u16 = 240;
+// #[embassy_executor::task]
+// async fn run() {
+//     loop {
+//         info!("Hello world from embassy using esp-hal-async!");
+//         Timer::after(Duration::from_millis(1_000)).await;
+//     }
+// }
 
-
-#[embassy_executor::task(pool_size = 4)]
-async fn run() {
-    loop {
-        info!("Hello world from embassy using esp-hal-async!");
-        Timer::after(Duration::from_millis(1_000)).await;
-    }
-}
-
-#[embassy_executor::task(pool_size = 4)]
+#[embassy_executor::task]
 async fn sound_task(mut buzzer: Buzzer<'static>) {
     let mut buzzer_state = BuzzerState::default();
     loop {
@@ -67,6 +68,7 @@ async fn sound_task(mut buzzer: Buzzer<'static>) {
 
 
 
+esp_bootloader_esp_idf::esp_app_desc!();
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) {
     // generator version: 0.3.1
@@ -74,10 +76,13 @@ async fn main(spawner: Spawner) {
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
 
-    esp_alloc::heap_allocator!(size: 72 * 1024);
-    // esp_alloc::psram_allocator!(peripherals.PSRAM, esp_hal::psram);
-
+    esp_alloc::heap_allocator!(size: 64 * 1024);
+    // COEX needs more RAM - so we've added some more
+    esp_alloc::heap_allocator!(#[unsafe(link_section = ".dram2_uninit")] size: 64 * 1024);
+    // esp_alloc::heap_allocator!(size: 72 * 1024);
+    esp_alloc::psram_allocator!(peripherals.PSRAM, esp_hal::psram);
     let stats: HeapStats = esp_alloc::HEAP.stats();
+    
     let timg1 = TimerGroup::new(peripherals.TIMG1);
     // let timer0: AnyTimer = timg1.timer0.into();
     // let timer1: AnyTimer = timg1.timer1.into();
@@ -152,7 +157,7 @@ async fn main(spawner: Spawner) {
 
 
     // lets try to get the interface for the display
-    let mut display = {
+    let mut display: StickDisplay<'_, mipidsi::interface::SpiInterface<'_, embedded_hal_bus::spi::ExclusiveDevice<esp_hal::spi::master::SpiDmaBus<'_, esp_hal::Async>, Output<'_>, esp_hal::delay::Delay>, Output<'_>>, Output<'_>> = {
         let backlight = peripherals.GPIO27;
         let sclk = peripherals.GPIO13;
         let mosi = peripherals.GPIO15;
@@ -167,27 +172,6 @@ async fn main(spawner: Spawner) {
             .create_display(dc, rst, cs) 
     };
 
-
-    // Text
-    // let char_w = FONT_10X20.character_size.width; //10;
-    // let char_h = FONT_10X20.character_size.height; //20;
-    let text_style = MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE);
-    let text = "Hello World ^_^;";
-    let mut text_x: i32 = DISPLAY_WIDTH.into();
-    let text_y: i32 = (DISPLAY_HEIGHT / 2).into();
-
-    // Alternating color
-    let colors = [Rgb565::RED, Rgb565::GREEN, Rgb565::BLUE];
-
-    // let style = PrimitiveStyleBuilder::new()
-    //     .stroke_color(Rgb565::RED)
-    //     .stroke_width(3)
-    //     .fill_color(Rgb565::GREEN)
-    //     .build();
-    // let area = Rectangle::new(Point { x: 0, y: 0 }, Size::new(DISPLAY_WIDTH.into(), DISPLAY_HEIGHT.into()))
-    //     .into_styled(style);
-    
-
     display.on();
 
     
@@ -197,12 +181,18 @@ async fn main(spawner: Spawner) {
     let buzzer = Buzzer::new(ledc, buzzer_pin, snd_rx);
 
     // TODO: Spawn some tasks
+    let mut rng = esp_hal::rng::Rng::new(peripherals.RNG);
+    // static WINDOW: StaticCell<CCanvas<Rgb565, 125, 142>> = StaticCell::new();
+    // let window = WINDOW.init_with(|| CCanvas::<Rgb565, 125, 142>::new());
+    if let Err(e) = spawner.spawn(display_task(display, rng)) {
+        error!("unable to spawn display_task: {}", e);
+    }
     if let Err(e) = spawner.spawn(sound_task(buzzer)) {
         error!("unable to spawn sound_task: {}", e);
     }
-    if let Err(e) = spawner.spawn(run()) {
-        error!("unable to spawn run_task: {}", e);
-    }
+    // if let Err(e) = spawner.spawn(run()) {
+    //     error!("unable to spawn run_task: {}", e);
+    // }
 
     if let Ok(btn_reader) = initialize_buttons(button_a, button_b, button_c) {
         if let Err(e) = spawner.spawn(btn_task(btn_reader)) {
@@ -230,26 +220,26 @@ async fn main(spawner: Spawner) {
     }
 
     info!("{}", stats);
-    let mut counter = 0;
+    // let mut counter = 0;
     loop {
-        counter += 1;
+        // counter += 1;
 
-        {
-            // let mut display = get_raw_fb(frame_buffer);
-            // Fill the display with alternating colors every 8 frames
-            display.clear(colors[(counter / 8) % colors.len()]).unwrap();
-            
-            // Draw text
-            let right = Text::new(text, Point::new(text_x, text_y), text_style)
-                .draw(display.deref_mut())
-                .unwrap();
-            text_x = if right.x <= 0 { DISPLAY_WIDTH.into() } else { text_x - 10 };
-        }
+        // {
+        //     // let mut display = get_raw_fb(frame_buffer);
+        //     // Fill the display with alternating colors every 8 frames
+        //     display.clear(colors[(counter / 8) % colors.len()]).unwrap();
+        //     // Draw text
+        //     let right = Text::new(text, Point::new(text_x, text_y), text_style)
+        //         .draw(display.deref_mut())
+        //         .unwrap();
+        //     text_x = if right.x <= 0 { WIDTH.into() } else { text_x - 10 };
+        // }
+        //     text_box.draw(&mut display).unwrap();
         led.toggle();
 
         match rtc.datetime() {
             Ok(dt) => {
-                info!("datetime {:02}:{:02}:{:02} ", dt.hour, dt.minute, dt.second);
+                // info!("datetime {:02}:{:02}:{:02} ", dt.hour, dt.minute, dt.second);
             },
             Err(e) => {
                 match e {
@@ -258,17 +248,192 @@ async fn main(spawner: Spawner) {
                     _ => error!("mystery error"),
                 }
             },
-        }
-
+        }        
         // a_display.show_raw_data(0, 0, watchy_m5::display::WIDTH, watchy_m5::display::HEIGHT, frame_buffer).await.unwrap();
         // info!("Hello world!");
-        Timer::after(Duration::from_millis(750)).await;
+        Timer::after(Duration::from_millis(1_000)).await;
 
     }
 
     // for inspiration have a look at the examples at https://github.com/esp-rs/esp-hal/tree/esp-hal-v1.0.0-beta.0/examples/src/bin
 }
 
+
+type StickDrawTarget<'d> = StickDisplay<'d, mipidsi::interface::SpiInterface<'d, embedded_hal_bus::spi::ExclusiveDevice<esp_hal::spi::master::SpiDmaBus<'d, esp_hal::Async>, Output<'d>, esp_hal::delay::Delay>, Output<'d>>, Output<'d>>;
+
+#[embassy_executor::task]
+async fn display_task(mut display: StickDrawTarget<'static>, mut esp_rng: esp_hal::rng::Rng) {
+    display_task_worker(display, esp_rng).await;
+}
+
+async fn display_task_worker(mut display: StickDrawTarget<'static>, mut esp_rng: esp_hal::rng::Rng) {
+
+    // Alternating color
+    let colors = [Rgb565::RED, Rgb565::GREEN, Rgb565::BLUE];
+    // Create styles used by the drawing operations.
+    let thin_stroke = PrimitiveStyle::with_stroke(Rgb565::BLACK, 1);
+    let thick_stroke = PrimitiveStyle::with_stroke(Rgb565::BLACK, 3);
+    let border_stroke = PrimitiveStyleBuilder::new()
+        .stroke_color(Rgb565::BLACK)
+        .stroke_width(3)
+        .stroke_alignment(StrokeAlignment::Inside)
+        .build();
+    let ball_bound_sb = PrimitiveStyleBuilder::new()
+        .stroke_color(Rgb565::BLACK)
+        .stroke_width(3)
+        .stroke_alignment(StrokeAlignment::Inside)
+        .fill_color(Rgb565::CYAN);
+    let fill = PrimitiveStyle::with_fill(Rgb565::CYAN);
+
+    let display_area = display.bounding_box().into_styled(thin_stroke);
+
+    let text_box = {
+        let text = "Blah blah blah blah!";
+        let character_style = MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE);
+        let textbox_style = TextBoxStyleBuilder::new()
+            .height_mode(HeightMode::FitToText)
+            .alignment(HorizontalAlignment::Justified)
+            .paragraph_spacing(6)
+            .build();
+        let tl = display_area.bounding_box().top_left + Point::new(3, 3);
+        let bounds = Rectangle::new(tl, Size::new((display.bounding_box().size.width * 2)/3, 0));
+        let mut t = TextBox::with_textbox_style(text, bounds, character_style, textbox_style);
+        let outline = t.bounding_box().offset(3).into_styled(thick_stroke);
+        t.align_to_mut(&outline, horizontal::Center, vertical::Center);
+        Chain::new(outline)
+            .append(t)
+            .align_to(&display.bounding_box(), horizontal::Center, vertical::Top)
+    };
+    let mut hello_box = {
+        let text_x: i32 = WIDTH.into();
+        let text_y: i32 = (HEIGHT / 2).into();
+        let text = "Hello World ^_^;";
+        let text_style = MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE);
+        let bounds = Text::new(text, Point::new(text_x, text_y), text_style)
+            .bounding_box()
+            .offset(3);
+        let textbox_style = TextBoxStyleBuilder::new()
+            .height_mode(HeightMode::FitToText)            
+            .alignment(HorizontalAlignment::Justified)
+            .paragraph_spacing(6)
+            .build();
+        TextBox::with_textbox_style(text, bounds, text_style, textbox_style)
+    };
+
+    
+    hello_box.align_to_mut(&text_box, horizontal::NoAlignment, vertical::TopToBottom);
+
+    let bb_tl = Point::new(0,88);
+    // let mut ball_canvas: CCanvasAt<Rgb565, 135, 152> = CCanvasAt::new(Point::new(0, 88));
+    let mut ball_canvas= Canvas::<Rgb565>::new(Size::new(135, 152)).place_at(bb_tl);
+    let bounce_box = ball_canvas.bounding_box();
+    // let bb_tl = Point::new(0, hello_box.bounding_box().anchor_y(AnchorY::Bottom)+1);
+    // let bounce_box = Rectangle::with_corners(bb_tl, display.bounding_box().anchor_point(AnchorPoint::BottomRight));
+
+    info!("bounce_box: {:?}", bounce_box);
+
+    let circle = Circle::with_center(bounce_box.bounding_box().center(), 15);
+    let mut ball = Sprite::new(fill, thin_stroke, circle, Point::zero());
+    // let mut ball: BouncyBall<Rgb565> = BouncyBall::new(fill, circle, Point::zero());
+    ball.set_line_style(PrimitiveStyle::with_stroke(Rgb565::BLACK, 1));
+    // ball.set_boundary(bounce_box);
+
+    let mut fun_rng = rand::rngs::SmallRng::from_rng(&mut esp_rng);
+
+    
+    display.on();
+
+    
+    ball.set_direction_from_angle(Angle::from_degrees(fun_rng.random_range(0..360) as f32));
+    let mut sprite_container = SpriteContainer::new(bounce_box);
+    sprite_container.add_sprite(ball);
+    // let bounce_perimeter: Vec<Point> = bounce_box.pixels().map(|p| p.0).collect();
+    // let mut bounce_line = {
+    //     let p = fun_rng.random_range(0..bounce_perimeter.len());
+    //     Trajectory::new(ball.center(), bounce_perimeter[p])
+    // };    
+    // let mut bounce_line_points = bounce_line.points();
+    // let br = bounce_box.bounding_box().offset(5);
+    // info!("bounding box: {}", br);
+    // Size { width: 125, height: 142 }
+    // let mut ball_window = window.place_at(br.top_left);
+    // let mut ball_window: CCanvasAt<Rgb565, 125, 142> = CCanvasAt::<Rgb565, 125, 142>::new(br.top_left);
+    // CanvasAt::<Rgb565>::new(br.top_left, br.size);
+
+    let mut counter = 0;
+    let mut last_hello_tick = Instant::now();
+    let mut last_bounce_tick = Instant::now();
+    let mut bb_style: PrimitiveStyle<Rgb565> = ball_bound_sb.build();
+    loop {
+        
+        let bg_color = colors[(counter / 8) % colors.len()];
+        
+        if last_hello_tick.elapsed() >= Duration::from_secs(1) {
+            counter += 1;
+            // let mut display = get_raw_fb(frame_buffer);
+            // Fill the display with alternating colors every 8 frames
+            // display.clear(bg_color).unwrap();
+            bb_style = ball_bound_sb.fill_color(bg_color).build();
+            // Draw text
+            if let Err(_e) = hello_box.draw(&mut display) {
+                error!("unable to draw hello_box.");
+            }
+
+            let translation = {
+                if hello_box.bounds.anchor_x(AnchorX::Right) <= 0 {
+                    Point::new(WIDTH.into(), 0)
+                } else {
+                    Point::new(-10, 0)
+                }
+            };
+            embedded_graphics::prelude::Transform::translate_mut(&mut hello_box, translation);
+            last_hello_tick = Instant::now();
+            text_box.draw(&mut display).unwrap();
+        }
+
+        if last_bounce_tick.elapsed() >= Duration::from_millis(40) {
+            sprite_container.update_positions();
+            let _ = sprite_container.draw(&mut ball_canvas);
+            // if let Err(_e) = ball_logic(&mut ball_canvas, &bounce_box, bb_style, &mut ball) {
+            //     error!("problem drawing ball");
+            // }
+            ball_canvas.draw(&mut display).unwrap();
+            last_bounce_tick = Instant::now();
+        }
+
+        Timer::after(Duration::from_millis(10)).await;
+    }
+}
+
+fn ball_logic<D>(target: &mut D, bounce_box: &Rectangle, bb_style: PrimitiveStyle<Rgb565>, ball: &mut Sprite<Rgb565, Circle>) -> Result<(), <D as DrawTarget>::Error>
+where
+    D: embedded_graphics::prelude::DrawTarget<Color = Rgb565> 
+{
+    let bounce_box = bounce_box.into_styled(bb_style);
+    if let Err(_e) = bounce_box.draw(target) {
+        error!("error drawing bounce_box");
+        return Err(_e);
+    }
+    ball.move_object();
+    match ball.draw(target) {
+        Ok(_) => {
+            // info!("ball at {}", ball.center());
+            // if let Some(d) = ball.boundary_collision(&bounce_box.bounding_box()) {
+            //     info!("before bounce vec {}", ball.vector);
+            //     ball.set_direction_from_angle(d);
+            //     info!("after bounce vec {}", ball.vector);
+            //     // ball.move_step(2);
+            // } else {
+            //     // ball.move_step(1);
+            // }
+        },
+        Err(_e) => {
+            error!("error drawing bouncy ball");
+            return Err(_e);
+        },
+    }
+    Ok(())
+}
 
 
 

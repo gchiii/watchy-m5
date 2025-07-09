@@ -1,9 +1,10 @@
 use core::{cell::RefCell, marker::PhantomData};
+use defmt::info;
 use embassy_futures::select::{select, select3, Either, Either3};
 use embassy_sync::channel::Channel;
 use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, CriticalSectionMutex};
 use static_cell::StaticCell;
-use crate::buttons::{InputEvent, InputSubscriber, BUTTON_EVENT_CHANNEL};
+use crate::buttons::{ButtonEvent, InputEvent, InputSubscriber, BUTTON_EVENT_CHANNEL};
 use crate::{buzzer::BuzzerSender, music::Song};
 
 
@@ -154,7 +155,12 @@ impl<'p> Player<'p> {
                 }
             } else {
                 match select(msg_rx, cmd_rx).await {
-                    Either::First(event) => self.state.exec_input(event),
+                    Either::First(event) => {
+                        if let InputEvent::ButtonC(ButtonEvent::Short) = event {
+                            info!("{}", esp_alloc::HEAP.stats());
+                        }
+                        self.state.exec_input(event)
+                    },
                     Either::Second(mut cmd) => self.state.exec_cmd(&mut cmd),
                 }
             }

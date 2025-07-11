@@ -335,8 +335,8 @@ async fn display_task_worker(mut display: StickDrawTarget<'static>, mut esp_rng:
     info!("bounce_box: {:?}", bounce_box);
 
     let circle = Circle::with_center(bounce_box.bounding_box().center(), 15);
-    let mut ball = Sprite::new(fill, thin_stroke, circle.translate(Point { x: 30, y: 25 }));
-    let mut ball2 = Sprite::new(fill, thin_stroke, circle.translate(Point { x: -30, y: -25 }));
+    let mut ball = Sprite::new("ball1", PrimitiveStyle::with_fill(Rgb565::YELLOW), thin_stroke, circle.translate(Point { x: 30, y: 25 }));
+    let mut ball2 = Sprite::new("ball2", PrimitiveStyle::with_fill(Rgb565::MAGENTA), thin_stroke, circle.translate(Point { x: -30, y: -25 }));
     // let mut ball: BouncyBall<Rgb565> = BouncyBall::new(fill, circle, Point::zero());
     ball.set_line_style(PrimitiveStyle::with_stroke(Rgb565::BLACK, 1));
     // ball.set_boundary(bounce_box);
@@ -351,7 +351,9 @@ async fn display_task_worker(mut display: StickDrawTarget<'static>, mut esp_rng:
     let mut sprite_container = SpriteContainer::new(bounce_box);
     sprite_container.add_sprite(ball);
     sprite_container.add_sprite(ball2);
-    let stationary = Sprite::new(fill, thick_stroke, Rectangle::with_center(bounce_box.bounding_box().center(), Size::new_equal(25)));
+    // let stationary_shape = Rectangle::with_center(bounce_box.bounding_box().center(), Size::new_equal(25));
+    let stationary_shape = Circle::with_center(bounce_box.bounding_box().center(), 25);
+    let stationary = Sprite::new("stationary", fill, thick_stroke, stationary_shape);
     sprite_container.add_sprite(stationary);
     // let bounce_perimeter: Vec<Point> = bounce_box.pixels().map(|p| p.0).collect();
     // let mut bounce_line = {

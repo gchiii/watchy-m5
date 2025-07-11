@@ -7,3 +7,4 @@ pub mod buttons;
 pub mod player;
 pub mod display;
 pub mod gfx;
+pub mod sprites;

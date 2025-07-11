@@ -12,98 +12,26 @@ use embedded_graphics::{
 };
 use embedded_graphics::prelude::*;
 use micromath::{vector::{Vector, Vector2d}, F32};
+use micromath::F32Ext;
 use thiserror_no_std::Error;
 
-/// Converts a polar coordinate (angle/distance) into an (X, Y) coordinate centered around the
-/// center of the circle.
-///
-/// The angle is relative to the 12 o'clock position and the radius is relative to the edge of the
-/// clock face.
-fn polar(circle: &Circle, angle: &Angle, radius_delta: i32) -> Point {
-    let radius = circle.diameter as f32 / 2.0 + radius_delta as f32;
-    let angle = F32::from(angle.to_radians());
+use crate::sprites::{SpritePrimitive, SpriteVector};
 
-    circle.center()
-        + Point::new(
-            (angle.sin().0 * radius) as i32,
-            -(angle.cos().0 * radius) as i32,
-        )
-}
+// /// Converts a polar coordinate (angle/distance) into an (X, Y) coordinate centered around the
+// /// center of the circle.
+// ///
+// /// The angle is relative to the 12 o'clock position and the radius is relative to the edge of the
+// /// clock face.
+// fn polar(circle: &Circle, angle: &Angle, radius_delta: i32) -> Point {
+//     let radius = circle.diameter as f32 / 2.0 + radius_delta as f32;
+//     let angle = F32::from(angle.to_radians());
 
-
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default, defmt::Format)]
-pub enum CollisionSide {
-    #[default]
-    None,
-    Left(Point),
-    Top(Point),
-    Right(Point),
-    Bottom(Point),
-}
-
-pub trait Perimeter: Primitive {
-    fn perimeter(&self) -> Vec<Point>;
-}
-
-impl Perimeter for Circle {
-    fn perimeter(&self) -> Vec<Point> {
-        let style = PrimitiveStyle::<BinaryColor>::with_stroke(BinaryColor::On, 1);
-        let styled= self.into_styled(style);
-        styled.pixels().map(|p| p.0).collect()
-    }
-}
-
-impl Perimeter for Rectangle {
-    fn perimeter(&self) -> Vec<Point> {
-        let style = PrimitiveStyle::<BinaryColor>::with_stroke(BinaryColor::On, 1);
-        let styled= self.into_styled(style);
-        styled.pixels().map(|p| p.0).collect()
-    }
-}
-
-
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default, defmt::Format)]
-pub struct Edges {
-    pub top: Line,
-    pub bottom: Line,
-    pub left: Line,
-    pub right: Line,
-}
-
-impl Edges {
-    pub fn new(shape: &impl Dimensions) -> Self {
-        let r = shape.bounding_box();    
-        Self { 
-            top: Line::new(r.top_left, r.anchor_point(AnchorPoint::TopRight)),
-            bottom: Line::new(r.anchor_point(AnchorPoint::BottomLeft), r.anchor_point(AnchorPoint::BottomRight)),
-            left: Line::new(r.top_left, r.anchor_point(AnchorPoint::BottomLeft)),
-            right: Line::new(r.anchor_point(AnchorPoint::TopRight), r.anchor_point(AnchorPoint::BottomRight)) 
-        }
-    }
-
-    pub fn intersect(first_line: Line, other_line: Line) -> Option<Point> {        
-        let a1 = F32((first_line.end.y - first_line.start.y) as f32);
-        let b1 = F32((first_line.start.x - first_line.end.x) as f32);
-        let c1 = a1 * first_line.start.x as f32 + b1 * first_line.start.y as f32;
-
-        let a2 = F32((other_line.end.y - other_line.start.y) as f32);
-        let b2 = F32((other_line.start.x - other_line.end.x) as f32);
-        let c2 = a2 * other_line.start.x as f32 + b2 * other_line.start.y as f32;
-
-        let delta = a1 * b2 - a2 * b1;
-
-        if delta == 0.0 {
-            return None;
-        }
-
-        let x = (b2 * c1 - b1 * c2) / delta;
-        let y = (a1 * c2 - a2 * c1) / delta;
-        Some(Point {
-            x: x.round().0 as i32,
-            y: y.round().0 as i32,
-        })
-    }
-}
+//     circle.center()
+//         + Point::new(
+//             (angle.sin().0 * radius) as i32,
+//             -(angle.cos().0 * radius) as i32,
+//         )
+// }
 
 
 
@@ -158,12 +86,98 @@ impl PointExt for Point {
     }
 }
 
+pub trait Area {
+    fn area(&self) -> u32;
+}
+
+impl Area for Size {
+    fn area(&self) -> u32 {
+        self.height * self.width
+    }
+}
+    // pub fn normalize(self) -> GfxVec {
+    //     let x = self.x * self.x;
+    //     let y = self.y * self.y;
+    //     let sum = F32((x + y) as f32);
+    //     let mag = sum.sqrt();
+    //     GfxVec(Vector2d { x: (self.x as f32) / mag.0, y: (self.y as f32) / mag.0 })
+    // }
+
+
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub struct GfxVec(Vector2d<f32>);
+
+impl defmt::Format for GfxVec {
+    fn format(&self, fmt: defmt::Formatter) {
+        defmt::write!(fmt, "{{ x: {}, y: {} }}", self.0.x, self.0.y)
+    }
+}
+
+impl GfxVec {
+    pub fn new(x: f32, y:f32) -> Self {
+        GfxVec(Vector2d { x: x, y: y })
+    }
+
+    pub fn normalize(self) -> Self {
+        let mag = self.magnitude();
+        let normal_vector = Vector2d { x: self.x / mag, y: self.y / mag };
+        normal_vector.into()
+    }
+
+    pub fn rotate90(self) -> Self {
+        Self(Vector2d { x: -self.y, y: self.x })
+    }
+
+    pub fn cross_product(&self, other: &Self) -> f32 {
+        (self.x * other.y) - (self.y * other.x)
+    }
+}
+
+impl core::ops::DerefMut for GfxVec {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl core::ops::Deref for GfxVec {
+    type Target = Vector2d<f32>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl From<GfxVec> for Point {
+    fn from(value: GfxVec) -> Self {
+        Point { x: value.x.round() as i32, y: value.y.round() as i32 }
+    }
+}
+
+impl From<GfxVec> for Vector2d<f32> {
+    fn from(value: GfxVec) -> Self {
+        value.0
+    }
+}
+
+impl From<Vector2d<f32>> for GfxVec {
+    fn from(value: Vector2d<f32>) -> Self {
+        Self(value)
+    }
+}
+
+impl From<Point> for GfxVec {
+    fn from(value: Point) -> Self {
+        Self(Vector2d { x: value.x as f32, y: value.y as f32 })
+    }
+}
+
+
 pub trait SurfaceNormal {
     /// compute the normalized surface normal between self and point
-    fn surface_normal(&self, point: Point) -> GfxVec;
+    fn surface_normal(&self, point: impl Into<GfxVec> + Into<Point> + Copy) -> GfxVec;
 
     /// distance from nearest surface to point
-    fn distance(&self, point: Point) -> i32;
+    fn distance(&self, point: impl Into<GfxVec> + Into<Point> + Copy) -> f32;
 }
 
 impl ClosestEdge for Rectangle {
@@ -195,18 +209,19 @@ impl ClosestEdge for Rectangle {
 }
 
 impl SurfaceNormal for Rectangle {
-    fn surface_normal(&self, point: Point) -> GfxVec {
-        self.closest_edge(point).surface_normal(point)
+    fn surface_normal(&self, point: impl Into<GfxVec> + Into<Point> + Copy) -> GfxVec {
+        self.closest_edge(point.into()).surface_normal(point)
     }
     
-    fn distance(&self, point: Point) -> i32 {
-        self.closest_edge(point).distance(point)
+    fn distance(&self, point: impl Into<GfxVec> + Into<Point> + Copy) -> f32 {
+        self.closest_edge(point.into()).distance(point)
     }
 }
 
 impl SurfaceNormal for Line {
 
-    fn surface_normal(&self, point: Point) -> GfxVec {
+    fn surface_normal(&self, point: impl Into<GfxVec> + Into<Point> + Copy) -> GfxVec {
+        let point: Point = point.into();
         let closest_point = {
             let line_vec = self.delta();
             let point_vec = point - self.start;
@@ -216,7 +231,7 @@ impl SurfaceNormal for Line {
                 self.start
             } else {              
                 let t = point_vec.dot_product(line_vec) as f32 / line_len_sq;
-                let t = t.max(0.0).min(1.0);
+                let t = t.clamp(0.0, 1.0);
     
                 Point {
                     x: (self.start.x as f32 + t * line_vec.x as f32) as i32,
@@ -227,7 +242,8 @@ impl SurfaceNormal for Line {
         GfxVec::from(closest_point - point).normalize()
     }
     
-    fn distance(&self, point: Point) -> i32 {
+    fn distance(&self, point: impl Into<GfxVec> + Into<Point> + Copy) -> f32 {
+        let point: Point = point.into();
         let closest_point = {
             let line_vec = self.delta();
             let point_vec = point - self.start;
@@ -237,7 +253,7 @@ impl SurfaceNormal for Line {
                 self.start
             } else {              
                 let t = point_vec.dot_product(line_vec) as f32 / line_len_sq;
-                let t = t.max(0.0).min(1.0);
+                let t = t.clamp(0.0, 1.0);
     
                 Point {
                     x: (self.start.x as f32 + t * line_vec.x as f32) as i32,
@@ -245,7 +261,7 @@ impl SurfaceNormal for Line {
                 }
             }
         };
-        closest_point.distance(point)
+        closest_point.distance(point) as f32
     }    
 }
 
@@ -311,11 +327,13 @@ impl ClosestEdge for Triangle {
 }
 
 impl SurfaceNormal for Triangle {
-    fn surface_normal(&self, point: Point) -> GfxVec {
+    fn surface_normal(&self, point: impl Into<GfxVec> + Into<Point> + Copy) -> GfxVec {
+        let point: Point = point.into();
         self.closest_edge(point).surface_normal(point)
     }
     
-    fn distance(&self, point: Point) -> i32 {
+    fn distance(&self, point: impl Into<GfxVec> + Into<Point> + Copy) -> f32 {
+        let point: Point = point.into();
         self.closest_edge(point).distance(point)
     }
 }
@@ -343,23 +361,26 @@ impl<'a> ClosestEdge for Polyline<'a> {
 }
 
 impl<'a> SurfaceNormal for Polyline<'a> {
-    fn surface_normal(&self, point: Point) -> GfxVec {
+    fn surface_normal(&self, point: impl Into<GfxVec> + Into<Point> + Copy) -> GfxVec {
+        let point: Point = point.into();
         self.closest_edge(point).surface_normal(point)
     }
     
-    fn distance(&self, point: Point) -> i32 {
+    fn distance(&self, point: impl Into<GfxVec> + Into<Point> + Copy) -> f32 {
+        let point: Point = point.into();
         self.closest_edge(point).distance(point)
     }
 }
 
 impl SurfaceNormal for Circle {
     // compute the normalized surface normal between self and point
-    fn surface_normal(&self, point: Point) -> GfxVec {
+    fn surface_normal(&self, point: impl Into<GfxVec> + Into<Point> + Copy) -> GfxVec {
+        let point: Point = point.into();
         GfxVec::from(self.center() - point).normalize()
     }
     
-    fn distance(&self, point: Point) -> i32 {
-        self.center().distance(point) - (self.diameter / 2) as i32
+    fn distance(&self, point: impl Into<GfxVec> + Into<Point> + Copy) -> f32 {
+        (self.center().distance(point.into()) as u32 - (self.diameter / 2)) as f32
     }
 }
 
@@ -373,109 +394,75 @@ pub enum SpriteError {
 }
 
 pub trait Movable: Primitive + SurfaceNormal + Transform {
-    // fn move_by(&mut self, by: Point);
 }
 
-// impl Movable for Circle {
-//     fn move_by(&mut self, by: Point) {
-//         self.top_left += by;
-//     }
-// }
 
-// impl Movable for Rectangle {
-//     fn move_by(&mut self, by: Point) {
-//         self.top_left += by;
-//     }
-// }
-
-
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, defmt::Format)]
-pub enum SpritePrimitive<'a> 
-// where 
-//     C: PixelColor,
-{
-    Line(primitives::Line),
-    Circle(primitives::Circle),
-    Rectangle(primitives::Rectangle),
-    Polyline(primitives::Polyline<'a>),
-}
-
-impl<'a> Dimensions for SpritePrimitive<'a> {
-    fn bounding_box(&self) -> Rectangle {
-        match self {
-            SpritePrimitive::Line(line) => line.bounding_box(),
-            SpritePrimitive::Circle(circle) => circle.bounding_box(),
-            SpritePrimitive::Rectangle(rectangle) => rectangle.bounding_box(),
-            SpritePrimitive::Polyline(polyline) => polyline.bounding_box(),
-        }
-    }
-}
 
 impl<'a> SurfaceNormal for SpritePrimitive<'a> {
-    fn surface_normal(&self, point: Point) -> GfxVec {
+    fn surface_normal(&self, point: impl Into<GfxVec> + Into<Point> + Copy) -> GfxVec {
         match self {
             SpritePrimitive::Line(line) => line.surface_normal(point),
             SpritePrimitive::Circle(circle) => circle.surface_normal(point),
             SpritePrimitive::Rectangle(rectangle) => rectangle.surface_normal(point),
             SpritePrimitive::Polyline(polyline) => polyline.surface_normal(point),
+            SpritePrimitive::Triangle(triangle) => triangle.surface_normal(point),
         }
     }
-
-    fn distance(&self, point: Point) -> i32 {
+    
+    fn distance(&self, point: impl Into<GfxVec> + Into<Point> + Copy) -> f32 {
         match self {
             SpritePrimitive::Line(line) => line.distance(point),
             SpritePrimitive::Circle(circle) => circle.distance(point),
             SpritePrimitive::Rectangle(rectangle) => rectangle.distance(point),
             SpritePrimitive::Polyline(polyline) => polyline.distance(point),
+            SpritePrimitive::Triangle(triangle) => triangle.distance(point),
         }
     }
 }
 
-impl<'a> From<Line> for SpritePrimitive<'a> {
-    fn from(value: Line) -> Self {
-        Self::Line(value)
-    }
-}
-impl<'a> From<Circle> for SpritePrimitive<'a> {
-    fn from(value: Circle) -> Self {
-        Self::Circle(value)
-    }
-}
-impl<'a> From<Rectangle> for SpritePrimitive<'a> {
-    fn from(value: Rectangle) -> Self {
-        Self::Rectangle(value)
-    }
-}
-impl<'a> From<Polyline<'a>> for SpritePrimitive<'a> {
-    fn from(value: Polyline<'a>) -> Self {
-        Self::Polyline(value)
-    }
-}
 
 
-impl<'a> Transform for SpritePrimitive<'a> {
-    fn translate(&self, by: Point) -> Self {
-        match self {
-            SpritePrimitive::Line(line) => line.translate(by).into(),
-            SpritePrimitive::Circle(circle) => circle.translate(by).into(),
-            SpritePrimitive::Rectangle(rectangle) => rectangle.translate(by).into(),
-            SpritePrimitive::Polyline(polyline) => polyline.translate(by).into(),
-        }
-    }
-
-    fn translate_mut(&mut self, by: Point) -> &mut Self {
-        *self = self.translate(by);
-        self
-    }
-}
-
-#[derive(Clone, Copy, Hash, Debug, defmt::Format)]
+#[derive(Clone, Copy, Debug, defmt::Format)]
 pub struct Sprite<'a, C: PixelColor>
 {
+    name: &'a str,
     style: PrimitiveStyle<C>,
     line_style: PrimitiveStyle<C>,
     shape: SpritePrimitive<'a>,
-    velocity: Point,
+    velocity: GfxVec,
+}
+
+// impl SurfaceNormal for Circle {
+//     // compute the normalized surface normal between self and point
+//     fn surface_normal(&self, point: Point) -> GfxVec {
+//         GfxVec::from(self.center() - point).normalize()
+//     }
+    
+//     fn distance(&self, point: Point) -> i32 {
+//         self.center().distance(point) - (self.diameter / 2) as i32
+//     }
+// }
+
+impl<'a, C: PixelColor> SurfaceNormal for Sprite<'a, C> {
+    fn surface_normal(&self, point: impl Into<GfxVec> + Into<Point> + Copy) -> GfxVec {
+        let point: GfxVec = point.into();
+        let sn = GfxVec(GfxVec::from(self.center()).0 - point.0);
+        sn.normalize()
+    //     if !self.is_moving() {
+
+    //     } else {
+
+    //     }
+    }
+
+    fn distance(&self, point: impl Into<GfxVec> + Into<Point> + Copy) -> f32 {
+        let point: GfxVec = point.into();
+        let center: GfxVec = self.center().into();
+        center.distance(*point)
+        // let mut dist = GfxVec::from(self.center()).distance(point.into());
+        // dist -= (self.half_width() as f32 / 2.0 );
+        // dist
+    }
 }
 
 impl<'a, C: PixelColor> Drawable for Sprite<'a, C> {
@@ -486,22 +473,21 @@ impl<'a, C: PixelColor> Drawable for Sprite<'a, C> {
     fn draw<D>(&self, target: &mut D) -> Result<Self::Output, D::Error>
     where
         D: DrawTarget<Color = Self::Color> {
-        match self.shape {
-            SpritePrimitive::Line(line) => line.into_styled(self.style()).draw(target)?,
-            SpritePrimitive::Circle(circle) => circle.into_styled(self.style()).draw(target)?,
-            SpritePrimitive::Rectangle(rectangle) => rectangle.into_styled(self.style()).draw(target)?,
-            SpritePrimitive::Polyline(polyline) => polyline.into_styled(self.style()).draw(target)?,
-        };
-        Line::with_delta(self.center(), self.velocity()).draw_styled(&self.line_style, target)?;
+        self.shape.draw_styled(&self.style, target)?;
+        Line::with_delta(self.center(), self.velocity().into()).draw_styled(&self.line_style, target)?;
         Ok(())
     }
 }
 
 impl<'a, C: PixelColor> Sprite<'a, C> {
-    pub fn new(style: PrimitiveStyle<C>, line_style: PrimitiveStyle<C>, shape: impl Into<SpritePrimitive<'a>>) -> Self {
-        Self { style, line_style, shape: shape.into(), velocity: Point::zero() }
+    pub fn new(name: &'a str, style: PrimitiveStyle<C>, line_style: PrimitiveStyle<C>, shape: impl Into<SpritePrimitive<'a>>) -> Self {
+        Self {name, style, line_style, shape: shape.into(), velocity: Point::zero().into() }
     }
-        
+
+    pub fn name(&self) -> &str {
+        self.name
+    }
+
     #[inline]
     pub fn style(&self) -> PrimitiveStyle<C> {
         self.style
@@ -533,17 +519,17 @@ impl<'a, C: PixelColor> Sprite<'a, C> {
     }
     
     #[inline]
-    pub fn velocity(&self) -> Point {
+    pub fn velocity(&self) -> GfxVec {
         self.velocity
     }
     
     #[inline]
-    pub fn velocity_mut(&mut self) -> &mut Point {
+    pub fn velocity_mut(&mut self) -> &mut GfxVec {
         &mut self.velocity
     }
     
     #[inline]
-    pub fn set_velocity(&mut self, velocity: Point) {
+    pub fn set_velocity(&mut self, velocity: GfxVec) {
         self.velocity = velocity;
     }
 
@@ -563,84 +549,126 @@ impl<'a, C: PixelColor> Sprite<'a, C> {
     }
 
     pub fn set_direction_from_angle(&mut self, direction: Angle) {
-        let radius = F32(self.half_width() as f32) + 1.0;
-        let angle = F32::from(direction.to_radians());
-        let delta = Point::new(
-            (angle.sin().0 * radius).0 as i32,
-            -(angle.cos().0 * radius).0 as i32,
-        );
-        self.set_velocity(delta);
+        let radius = (self.half_width() as f32) + 1.0;
+        let angle = direction.to_radians();
+        let (mut x, mut y) = angle.sin_cos();
+        x *= radius;
+        y *= radius;
+        self.set_velocity(GfxVec((x, y).into()));
     }
 
     // incident vector is the vector before collision
     fn incident_vector(&self) -> GfxVec {
-        GfxVec::from(self.velocity())
+        self.velocity().into()
     }
-
+    
     // compute the reflection vector
     fn reflected_vector(&self, surface_normal: GfxVec) -> GfxVec {
-        let incident_vector = self.incident_vector();
-        let twice_dot_product = 2.0 * incident_vector.dot(surface_normal.into());
-        let x = incident_vector.x - (twice_dot_product * surface_normal.x);
-        let y = incident_vector.y - (twice_dot_product * surface_normal.y);
-        let v = GfxVec(Vector2d { x, y });
-        info!("new speed: {}", v.0.magnitude());
+        // let incident_vector = self.incident_vector();
+        // let twice_dot_product = 2.0 * incident_vector.dot(surface_normal.into());
+        // let x = incident_vector.x - (twice_dot_product * surface_normal.x);
+        // let y = incident_vector.y - (twice_dot_product * surface_normal.y);
+        // let v = GfxVec(Vector2d { x, y });
+
+        let incoming_velocity = self.incident_vector().0;
+        let normal = surface_normal.normalize().0;
+        // Calculate the component of the incoming velocity perpendicular to the collision surface
+        let scalar = incoming_velocity.dot(normal);
+        let perpendicular_velocity = Vector2d::<f32>::from((scalar * normal.x, scalar * normal.y ));
+
+        // Calculate the component of the incoming velocity parallel to the collision surface
+        let parallel_velocity = incoming_velocity - perpendicular_velocity;
+
+        // The reflected perpendicular velocity is reversed and scaled by the COR
+        let coefficient_of_restitution = 1.0;
+        let reflected_perpendicular_velocity = Vector2d::<f32>::from(( -perpendicular_velocity.x * coefficient_of_restitution,  -perpendicular_velocity.y * coefficient_of_restitution));
+
+        // The reflected velocity is the sum of the reflected perpendicular and parallel components
+        let v = GfxVec(reflected_perpendicular_velocity + parallel_velocity);
+        let incident_vector = incoming_velocity;
+        // let incident_vector = SpriteVector::from(self.incident_vector());
+        // let collision_normal = SpriteVector::from(surface_normal);
+        // let v= SpritePrimitive::calculate_reflection_vector(&incident_vector, &collision_normal, 1.0);
+        // let v = GfxVec::from(v);
+
+        let (speed1, speed2) = (incident_vector.magnitude(), v.magnitude());
+        if (speed1 - speed2).abs() > 0.1 {
+            info!("{} speed change: old = {}, new = {}", self.name(), speed1, speed2);
+        }
         v
     }
 
-    fn collission_update(sprite1: &mut Sprite<'a, C>, sprite2: &mut Sprite<'a, C>) -> bool {
-        let collision_distance = 1;
-        if sprite1.shape != sprite2.shape && sprite1.simple_distance(sprite2) <= collision_distance {
-            if sprite1.is_moving() {
-                let my_reflection: Point = sprite1.reflected_vector(sprite2.shape.surface_normal(sprite1.center())).into();
-                info!("Collision Sprite1: vel1: {} vel2: {}", sprite1.velocity, my_reflection);
-                sprite1.set_velocity(my_reflection);
-                sprite1.move_object();
-            }
-            if sprite2.is_moving() {
-                let other_reflection: Point = sprite2.reflected_vector(sprite1.shape.surface_normal(sprite2.center())).into();
-                info!("Collision Sprite2: vel1: {} vel2: {}", sprite2.velocity, other_reflection);
-                sprite2.set_velocity(other_reflection);
-                sprite2.move_object();
-            }
-            true
-        } else {
-            false
-        }
+    pub fn distance_between(&self, other: &Self) -> i32 {
+        self.shape.distance_between(&other.shape)
     }
-    pub fn collission_update_bounded(sprite1: &mut Sprite<'a, C>, sprite2: &mut Sprite<'a, C>, boundary: & impl Dimensions) -> bool {
-        let collision_distance = 1;
-        if sprite1.shape != sprite2.shape && sprite1.simple_distance(sprite2) <= collision_distance {
-            if sprite1.is_moving() {
-                let my_reflection: Point = sprite1.reflected_vector(sprite2.shape.surface_normal(sprite1.center())).into();
-                info!("Collision Sprite1: vel1: {} vel2: {}", sprite1.velocity, my_reflection);
-                sprite1.set_velocity(my_reflection);
-                sprite1.move_object_bounded(boundary);
-            }
-            if sprite2.is_moving() {
-                let other_reflection: Point = sprite2.reflected_vector(sprite1.shape.surface_normal(sprite2.center())).into();
-                info!("Collision Sprite2: vel1: {} vel2: {}", sprite2.velocity, other_reflection);
-                sprite2.set_velocity(other_reflection);
-                sprite2.move_object_bounded(boundary);
-            }
-            true
-        } else {
-            false
+
+    pub fn about_to_collide(&self, other: &Self) -> bool {
+        let next_self = self.shape.translate(self.velocity.into());
+        let next_other = other.shape.translate(other.velocity.into());
+        next_self.distance_between(&next_other) < 1
+    }
+    
+    pub fn is_collision(sprite1: &Sprite<'a, C>, sprite2: &Sprite<'a, C>) -> bool {
+        let distance = sprite1.distance_between(sprite2);
+        distance < 1
+        // let r1 = sprite1.shape.bounding_box().offset(1);
+        // let r2 = sprite2.shape.bounding_box().offset(1);
+        // let i1 = r1.intersection(&r2);
+        // !i1.is_zero_sized()
+        // sprite1.box_distance(sprite2) < 1
+    }
+
+    pub fn box_distance(&self, other: &Self) -> i32 {
+        let distance_line = Line::new(self.center(), other.center());
+        let mut distance = distance_line.start.distance_squared(distance_line.end);
+        let size1 = self.shape.bounding_box().size;
+        let size2 = other.shape.bounding_box().size;
+
+        distance -= (size1.area() + size2.area()) as i32;
+        distance
+    }
+
+    fn wall_bounce(&self, boundary: & impl Dimensions) -> GfxVec {
+        let mut delta = self.velocity;
+        let center = self.center();
+        let width = self.half_width() as i32;
+
+        // check against bounds
+        let r = boundary.bounding_box();
+        let top_left = r.top_left;
+        let bottom_right = Point::new(top_left.x + r.size.width as i32, top_left.y + r.size.height as i32);
+
+        if (center.x - top_left.x) <= width || (bottom_right.x - center.x) <= width {
+            // bounce off x axis
+            delta.x = -delta.x;
         }
+        if (center.y - top_left.y) <= width || (bottom_right.y - center.y) <= width {
+            // bounce off y axis
+            delta.y = -delta.y;
+        }
+        delta
+    }
+
+    pub fn update_velocity(&mut self, other: &Self) -> bool{
+        let mut bounced = false;
+        if Self::is_collision(self, other) && self.is_moving() {
+            let velocity: GfxVec = self.reflected_vector(other.shape.surface_normal(self.center())).into();
+            self.set_velocity(velocity);
+            bounced = true;
+        }
+        bounced
     }
 
     #[inline]
     pub fn is_moving(&self) -> bool {
-        self.velocity != Point::zero()
+        // self.velocity.magnitude() > 0.0
+        Point::from(self.velocity) != Point::zero()
     }
-    #[inline]
-    pub fn is_stationary(&self) -> bool {
-        self.velocity == Point::zero()
-    }
+
     /// move object by applying the direction vector, while checking against containing rectangle
     pub fn move_object_bounded(&mut self, boundary: & impl Dimensions) {
         let mut delta = self.velocity();
-        if !(delta.x == 0 && delta.y == 0 ) {
+        if self.is_moving() {
             let center = self.center();
             let width = self.half_width() as i32;
     
@@ -659,22 +687,22 @@ impl<'a, C: PixelColor> Sprite<'a, C> {
             }
     
             self.set_velocity(delta);
-            self.shape.translate_mut(delta);
+            self.shape.translate_mut(Point::new(delta.x.round() as i32, delta.y.round() as i32));
         }
     }
 
     /// apply the velocity to the position of the shape (ignoring any collisions)
     pub fn move_object(&mut self) {
         let delta = self.velocity();
-        if !(delta.x == 0 && delta.y == 0 ) {
-            self.shape.translate_mut(delta);
+        if self.is_moving() {
+            self.shape.translate_mut(Point::new(delta.x.round() as i32, delta.y.round() as i32));
         }
     }
 
 }
 
 // #[derive(Debug, Eq, PartialEq, Ord, PartialOrd)]
-#[derive(Clone, Hash, Debug, Default, defmt::Format)]
+#[derive(Clone, Debug, Default, defmt::Format)]
 pub struct SpriteContainer<'a, C: PixelColor> {
     boundary: Rectangle,
     sprites: Vec<Sprite<'a, C>>,
@@ -693,25 +721,26 @@ impl<'a, C: PixelColor> SpriteContainer<'a, C> {
 
     pub fn update_positions(&mut self) {
         let max_idx = self.sprites.len();
-        let sprites = self.sprites.as_mut_slice();
         for i in 0..max_idx {
-            let (_a, b) = sprites.split_at_mut(i);
-            if i + 1 < max_idx {
-                let (b_first, b_second) = b.split_at_mut(1);
-                let first = &mut b_first[0];
-                let second = &mut b_second[0];                    
-                if Sprite::collission_update(first, second) {
-                    // first.move_object_bounded(&self.boundary);
-                }
-            } 
-            if i == max_idx {
-                let last = &mut b[0];
-                let first = &mut _a[0];
-                if Sprite::collission_update(last, first) {
-                    // last.move_object_bounded(&self.boundary);
+            let (left, right) = self.sprites.split_at_mut(i);
+            if let Some((current_sprite, right)) = right.split_first_mut() {
+                if current_sprite.is_moving() {
+                    // Iterate over the remaining parts to find other elements matching the predicate
+                    for other_sprite in left.iter().chain(right.iter()) {
+                        if current_sprite.about_to_collide(other_sprite) {
+                        // if current_sprite.box_distance(other_sprite) < 1 {
+                            if current_sprite.update_velocity(other_sprite) {
+                                // info!("{} bounced off of {}", current_sprite.name(), other_sprite.name());
+                            }
+                        }
+                    }
                 }
             }
-            b[0].move_object_bounded(&self.boundary);
+        }
+        for current_sprite in self.sprites.iter_mut() {
+            if current_sprite.is_moving() {
+                current_sprite.move_object_bounded(&self.boundary);
+            }
         }
     }
 }
@@ -764,103 +793,6 @@ impl LinearEquation {
         GfxVec::from(point).dot(self.normal_vector) - self.origin_distance
     }
 
-}
-
-#[derive(Copy, Clone, PartialEq, Debug)]
-pub struct GfxVec(Vector2d<f32>);
-
-impl defmt::Format for GfxVec {
-    fn format(&self, fmt: defmt::Formatter) {
-        defmt::write!(fmt, "{{ x: {}, y: {} }}", self.0.x, self.0.y)
-    }
-}
-
-impl GfxVec {
-    pub fn normalize(self) -> Self {
-        let mag = self.magnitude();
-        let normal_vector = Vector2d { x: self.x / mag, y: self.y / mag };
-        normal_vector.into()
-    }
-
-    pub fn rotate90(self) -> Self {
-        Self(Vector2d { x: -self.y, y: self.x })
-    }
-
-    pub fn cross_product(&self, other: &Self) -> f32 {
-        (self.x * other.y) - (self.y*other.x)
-    }
-}
-
-impl core::ops::DerefMut for GfxVec {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-impl core::ops::Deref for GfxVec {
-    type Target = Vector2d<f32>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl From<GfxVec> for Point {
-    fn from(value: GfxVec) -> Self {
-        Point { x: value.x as i32, y: value.y as i32 }
-    }
-}
-
-impl From<GfxVec> for Vector2d<f32> {
-    fn from(value: GfxVec) -> Self {
-        value.0
-    }
-}
-
-impl From<Vector2d<f32>> for GfxVec {
-    fn from(value: Vector2d<f32>) -> Self {
-        Self(value)
-    }
-}
-
-impl From<Point> for GfxVec {
-    fn from(value: Point) -> Self {
-        Self(Vector2d { x: value.x as f32, y: value.y as f32 })
-    }
-}
-
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default, defmt::Format)]
-struct GfxPoint(Point);
-
-impl GfxPoint {
-    pub fn normalize(self) -> GfxVec {
-        let x = self.x * self.x;
-        let y = self.y * self.y;
-        let sum = F32((x + y) as f32);
-        let mag = sum.sqrt();
-        GfxVec(Vector2d { x: (self.x as f32) / mag.0, y: (self.y as f32) / mag.0 })
-    }
-
-}
-
-impl core::ops::DerefMut for GfxPoint {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-impl core::ops::Deref for GfxPoint {
-    type Target = Point;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl From<Point> for GfxPoint {
-    fn from(value: Point) -> Self {
-        Self(value)
-    }
 }
 
 fn normalize_vector2d_f32(a_vec: Vector2d<f32>) -> Vector2d<f32> {

@@ -1,6 +1,7 @@
 // use core::{marker::PhantomData, ops::Deref};
 
-use core::marker::PhantomData;
+use core::{marker::PhantomData, ops::{Add, Mul, Neg}};
+
 
 use allocator_api2::{boxed::Box, vec::Vec};
 use defmt::info;
@@ -106,6 +107,14 @@ impl Area for Size {
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub struct GfxVec(Vector2d<f32>);
+
+impl Mul<f32> for GfxVec {
+    type Output = GfxVec;
+    
+    fn mul(self, rhs: f32) -> Self::Output {
+        Self::new(self.x * rhs, self.y * rhs)
+    }    
+}
 
 impl defmt::Format for GfxVec {
     fn format(&self, fmt: defmt::Formatter) {
@@ -562,40 +571,42 @@ impl<'a, C: PixelColor> Sprite<'a, C> {
         self.velocity().into()
     }
     
+
     // compute the reflection vector
     fn reflected_vector(&self, surface_normal: GfxVec) -> GfxVec {
-        // let incident_vector = self.incident_vector();
-        // let twice_dot_product = 2.0 * incident_vector.dot(surface_normal.into());
-        // let x = incident_vector.x - (twice_dot_product * surface_normal.x);
-        // let y = incident_vector.y - (twice_dot_product * surface_normal.y);
-        // let v = GfxVec(Vector2d { x, y });
+        let v = calculate_reflection_vector(&self.incident_vector().0, &surface_normal.0, 1.0);
+        // // let incident_vector = self.incident_vector();
+        // // let twice_dot_product = 2.0 * incident_vector.dot(sur1face_normal.into());
+        // // let x = incident_vector.x - (twice_dot_product * surface_normal.x);
+        // // let y = incident_vector.y - (twice_dot_product * surface_normal.y);
+        // // let v = GfxVec(Vector2d { x, y });
 
-        let incoming_velocity = self.incident_vector().0;
-        let normal = surface_normal.normalize().0;
-        // Calculate the component of the incoming velocity perpendicular to the collision surface
-        let scalar = incoming_velocity.dot(normal);
-        let perpendicular_velocity = Vector2d::<f32>::from((scalar * normal.x, scalar * normal.y ));
+        // let incoming_velocity = self.incident_vector().0;
+        // let normal = surface_normal.normalize().0;
+        // // Calculate the component of the incoming velocity perpendicular to the collision surface
+        // let scalar = incoming_velocity.dot(normal);
+        // let perpendicular_velocity = Vector2d::<f32>::from((scalar * normal.x, scalar * normal.y ));
 
-        // Calculate the component of the incoming velocity parallel to the collision surface
-        let parallel_velocity = incoming_velocity - perpendicular_velocity;
+        // // Calculate the component of the incoming velocity parallel to the collision surface
+        // let parallel_velocity = incoming_velocity - perpendicular_velocity;
 
-        // The reflected perpendicular velocity is reversed and scaled by the COR
-        let coefficient_of_restitution = 1.0;
-        let reflected_perpendicular_velocity = Vector2d::<f32>::from(( -perpendicular_velocity.x * coefficient_of_restitution,  -perpendicular_velocity.y * coefficient_of_restitution));
+        // // The reflected perpendicular velocity is reversed and scaled by the COR
+        // let coefficient_of_restitution = 1.0;
+        // let reflected_perpendicular_velocity = Vector2d::<f32>::from(( -perpendicular_velocity.x * coefficient_of_restitution,  -perpendicular_velocity.y * coefficient_of_restitution));
 
-        // The reflected velocity is the sum of the reflected perpendicular and parallel components
-        let v = GfxVec(reflected_perpendicular_velocity + parallel_velocity);
-        let incident_vector = incoming_velocity;
-        // let incident_vector = SpriteVector::from(self.incident_vector());
-        // let collision_normal = SpriteVector::from(surface_normal);
-        // let v= SpritePrimitive::calculate_reflection_vector(&incident_vector, &collision_normal, 1.0);
-        // let v = GfxVec::from(v);
+        // // The reflected velocity is the sum of the reflected perpendicular and parallel components
+        // let v = GfxVec(reflected_perpendicular_velocity + parallel_velocity);
+        // let incident_vector = incoming_velocity;
+        // // let incident_vector = SpriteVector::from(self.incident_vector());
+        // // let collision_normal = SpriteVector::from(surface_normal);
+        // // let v= SpritePrimitive::calculate_reflection_vector(&incident_vector, &collision_normal, 1.0);
+        // // let v = GfxVec::from(v);
 
-        let (speed1, speed2) = (incident_vector.magnitude(), v.magnitude());
+        let (speed1, speed2) = (self.incident_vector().magnitude(), v.magnitude());
         if (speed1 - speed2).abs() > 0.1 {
             info!("{} speed change: old = {}, new = {}", self.name(), speed1, speed2);
         }
-        v
+        v.into()
     }
 
     pub fn distance_between(&self, other: &Self) -> i32 {
@@ -700,6 +711,64 @@ impl<'a, C: PixelColor> Sprite<'a, C> {
     }
 
 }
+
+pub trait VecNormalize {
+    fn normalize(&self) -> Self;
+}
+
+impl<T> VecNormalize for Vector2d<T> 
+where 
+    T: micromath::vector::Component + core::convert::From<f32>,
+    f32: core::convert::From<T>,
+{
+    fn normalize(&self) -> Self {
+        let mag = self.magnitude();
+        let x = f32::from(self.x) / mag;
+        let y = f32::from(self.y) / mag;
+        Vector2d { x: x.into(), y: y.into()}
+    }
+}
+
+// impl<T> Neg for Vector2d<T> {
+//     type Output = Vector2d<T>;
+
+//     fn neg(self) -> Self::Output {
+//         Self {
+//             x: -self.x,
+//             y: -self.y,
+//         }
+//     }
+// }
+fn calculate_reflection_vector<T>(
+    incoming_velocity: &Vector2d<T>,
+    collision_normal: &Vector2d<T>,
+    coefficient_of_restitution: f32,
+) -> Vector2d<T> 
+where 
+    Vector2d<T>: VecNormalize + Mul<f32, Output = Vector2d<T>> + Mul<T, Output = Vector2d<T>>,
+    T: micromath::vector::Component + core::ops::Neg<Output = T>, 
+    <T as Neg>::Output: Mul<f32>, 
+    T: From<f32> + Mul<f32, Output = T>, 
+{
+    // Ensure the normal is normalized (unit length)
+    // let mag = collision_normal.magnitude()
+    let normal: Vector2d<T> = collision_normal.normalize();
+
+    // Calculate the component of the incoming velocity perpendicular to the collision surface
+    let perpendicular_velocity: Vector2d<T> = normal * incoming_velocity.dot(normal);
+    let neg_x = -perpendicular_velocity.x;
+    let neg_y = -perpendicular_velocity.y;
+    let neg_perpendicular_velocity: Vector2d<T> = Vector2d { x: neg_x , y: neg_y };
+
+    // Calculate the component of the incoming velocity parallel to the collision surface
+    let parallel_velocity: Vector2d<T> = *incoming_velocity - perpendicular_velocity;
+
+    // The reflected perpendicular velocity is reversed and scaled by the COR
+    let reflected_perpendicular_velocity: Vector2d<T> = neg_perpendicular_velocity * coefficient_of_restitution;
+
+    // The reflected velocity is the sum of the reflected perpendicular and parallel components
+    reflected_perpendicular_velocity + parallel_velocity
+}    
 
 // #[derive(Debug, Eq, PartialEq, Ord, PartialOrd)]
 #[derive(Clone, Debug, Default, defmt::Format)]

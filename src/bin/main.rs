@@ -34,12 +34,7 @@ use {esp_backtrace as _, esp_println as _};
 
 use core::cell::RefCell;
 use embedded_graphics::{
-    prelude::*, 
-    geometry::AnchorX, 
-    mono_font::{ascii::FONT_10X20, MonoTextStyle}, 
-    pixelcolor::Rgb565, 
-    primitives::{Circle, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle, StrokeAlignment}, 
-    text::Text
+    geometry::AnchorX, mono_font::{ascii::FONT_10X20, MonoTextStyle}, pixelcolor::Rgb565, prelude::*, primitives::{Circle, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle, StrokeAlignment, Triangle}, text::Text
 };
 
 use embedded_text::{
@@ -399,23 +394,19 @@ async fn display_task_worker(mut display: StickDrawTarget<'static>, mut esp_rng:
             text_box.draw(&mut display).unwrap();
         }
 
-        if last_bounce_tick.elapsed() >= Duration::from_millis(40) {
+        if last_bounce_tick.elapsed() >= Duration::from_millis(75) {
             sprite_container.update_positions();
             let bounce_box = bounce_box.into_styled(bb_style);
             if let Err(_e) = bounce_box.draw(&mut ball_canvas) {
                 error!("error drawing bounce_box");
-                // return Err(_e);
             }
 
             let _ = sprite_container.draw(&mut ball_canvas);
-            // if let Err(_e) = ball_logic(&mut ball_canvas, &bounce_box, bb_style, &mut ball) {
-            //     error!("problem drawing ball");
-            // }
             ball_canvas.draw(&mut display).unwrap();
             last_bounce_tick = Instant::now();
         }
 
-        Timer::after(Duration::from_millis(10)).await;
+        Timer::after(Duration::from_millis(25)).await;
     }
 }
 

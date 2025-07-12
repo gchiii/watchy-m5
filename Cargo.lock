@@ -2220,6 +2220,7 @@ dependencies = [
  "mpu6886",
  "nalgebra 0.33.2",
  "no-std-compat2",
+ "num-traits",
  "parry2d",
  "pcf8563",
  "portable-atomic-util",

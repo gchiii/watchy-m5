@@ -2,7 +2,8 @@ use core::ops::{Add, Div, Mul, Sub, Neg};
 use core::fmt::Debug;
 use embedded_graphics::prelude::Point;
 
-use num_traits::{self, NumCast, Pow, Float};
+use micromath::vector::{Vector, Vector2d};
+use num_traits::{self, Float, FromPrimitive, NumCast, Pow, ToPrimitive};
 
 // use defmt::info;
 // use thiserror_no_std::Error;
@@ -11,6 +12,8 @@ extern crate micromath as mm;
 extern crate nalgebra as na;
 
 use na::Vector2;
+
+use crate::sprites::geometry::PointExt;
 
 #[derive(Clone, Copy, Debug)]
 pub struct GfxVector(pub Vector2<f32>);
@@ -83,6 +86,8 @@ pub trait VectorComponent:
     + Sub<Output = Self>
     + Mul<Output = Self>
     + Div<Output = Self>
+    + ToPrimitive
+    + FromPrimitive
     // + Neg<Output = Self>
 {
 }
@@ -91,12 +96,29 @@ impl VectorComponent for i16 {}
 impl VectorComponent for i32 {}
 impl VectorComponent for f32 {}
 
+// `i32: core::convert::From<f32>`
+// `f32: core::convert::From<i32>`
 
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default, defmt::Format)]
-pub struct SpriteVector<T: VectorComponent> {    pub x: T,
+pub struct SpriteVector<T: VectorComponent> {    
+    pub x: T,
     pub y: T,
 }
 
+impl<T: VectorComponent + core::convert::From<i32>> From<Point> for SpriteVector<T> {
+    fn from(value: Point) -> Self {
+        SpriteVector {
+            x: value.x.into(),
+            y: value.y.into(),
+        }
+    }
+}
+
+impl<T: VectorComponent> From<SpriteVector<T>> for Point where i32: From<T> {
+    fn from(value: SpriteVector<T>) -> Self {
+        Point { x: value.x.into(), y: value.y.into() }
+    }
+}
 
 impl<T: VectorComponent> Mul<SpriteVector<T>> for f32 {
     type Output = SpriteVector<T>;
@@ -152,12 +174,44 @@ impl<T: VectorComponent> Add for SpriteVector<T> {
 }
 
 
-impl<T: VectorComponent + Neg<Output = T>> SpriteVector<T> where SpriteVector<T>: Neg<Output = SpriteVector<T>> {
-    pub fn new(x: T, y: T) -> Self {
+trait NewTrait<T: VectorComponent + Neg<Output = T>> where SpriteVector<T>: Neg<Output = SpriteVector<T>> {
+    fn new(x: T, y: T) -> Self;
+
+    fn magnitude(&self) -> T;
+
+    fn dot_product(&self, other: &Self) -> T;
+
+    // fn distance_squared(&self, other: &Self) -> T {
+    //     let delta_x = self.x - other.x;
+    //     let delta_y = self.y - other.y;
+    //     (delta_x * delta_x) + (delta_y * delta_y)
+    // }
+
+    // fn distance(&self, other: &Self) -> T {
+    //     let d = self.distance_squared(other);
+
+    //     let d = <f32 as num_traits::NumCast>::from(d).unwrap().sqrt();
+    //     <T as num_traits::NumCast>::from(d).unwrap()
+    // }
+    
+    fn normalize(self) -> Self;
+
+    fn rotate90(self) -> Self;
+
+    fn calculate_reflection_vector(
+        incoming_velocity: &Self,
+        collision_normal: &Self,
+        coefficient_of_restitution: f32,
+    ) -> Self;    
+
+}
+
+impl<T: VectorComponent + Neg<Output = T>> NewTrait<T> for SpriteVector<T> where SpriteVector<T>: Neg<Output = SpriteVector<T>> {
+    fn new(x: T, y: T) -> Self {
         Self { x, y }
     }
 
-    pub fn magnitude(&self) -> T {
+    fn magnitude(&self) -> T {
         let m: T = (self.x * self.x) + (self.y * self.y);
         let m = <f32 as num_traits::NumCast>::from(m).unwrap().sqrt();
         <T as num_traits::NumCast>::from(m).unwrap()
@@ -180,7 +234,7 @@ impl<T: VectorComponent + Neg<Output = T>> SpriteVector<T> where SpriteVector<T>
     //     <T as num_traits::NumCast>::from(d).unwrap()
     // }
     
-    pub fn normalize(self) -> Self {
+    fn normalize(self) -> Self {
         let mag = self.magnitude();
         let mut norm = self.clone();
         norm.x = self.x / mag;
@@ -188,13 +242,13 @@ impl<T: VectorComponent + Neg<Output = T>> SpriteVector<T> where SpriteVector<T>
         norm
     }
 
-    pub fn rotate90(self) -> Self {
+    fn rotate90(self) -> Self {
         let x = -self.y;
         let y = self.x;
         Self { x, y }
     }
 
-    pub fn calculate_reflection_vector(
+    fn calculate_reflection_vector(
         incoming_velocity: &Self,
         collision_normal: &Self,
         coefficient_of_restitution: f32,
@@ -217,8 +271,89 @@ impl<T: VectorComponent + Neg<Output = T>> SpriteVector<T> where SpriteVector<T>
 
 }
 
-impl<T: From<i32> + VectorComponent> From<Point> for SpriteVector<T> {
-    fn from(value: Point) -> Self {
-        Self { x: value.x.into(), y: value.y.into() }
+pub trait VecNormalize {
+    fn normalize(&self) -> Self;
+}
+
+impl<T> VecNormalize for Vector2d<T> 
+where 
+    T: micromath::vector::Component + core::convert::From<f32>,
+    f32: core::convert::From<T>,
+{
+    fn normalize(&self) -> Self {
+        let mag = self.magnitude();
+        let x = <f32 as core::convert::From<T>>::from(self.x) / mag;
+        let y = <f32 as core::convert::From<T>>::from(self.y) / mag;
+        Vector2d { x: x.into(), y: y.into()}
     }
 }
+
+impl VecNormalize for Point {
+    fn normalize(&self) -> Self {
+        let mag = (self.x.pow(2) + self.y.pow(2)).isqrt();
+        Self { x: self.x / mag, y: self.y / mag }
+    }
+}
+
+
+fn normalize_vector2d_f32(a_vec: micromath::vector::Vector2d<f32>) -> micromath::vector::Vector2d<f32> {
+    let mag = micromath::vector::Vector::magnitude(a_vec);
+    micromath::vector::Vector2d { x: a_vec.x / mag, y: a_vec.y / mag }
+}
+
+fn calculate_reflection_vector<T>(
+    incoming_velocity: &Vector2d<T>,
+    collision_normal: &Vector2d<T>,
+    coefficient_of_restitution: f32,
+) -> Vector2d<T> 
+where 
+    Vector2d<T>: VecNormalize + Mul<f32, Output = Vector2d<T>> + Mul<T, Output = Vector2d<T>>,
+    T: micromath::vector::Component + core::ops::Neg<Output = T>, 
+    <T as Neg>::Output: Mul<f32>, 
+    T: From<f32> + Mul<f32, Output = T>, 
+{
+    // Ensure the normal is normalized (unit length)
+    // let mag = collision_normal.magnitude()
+    let normal: Vector2d<T> = collision_normal.normalize();
+
+    // Calculate the component of the incoming velocity perpendicular to the collision surface
+    let perpendicular_velocity: Vector2d<T> = normal * incoming_velocity.dot(normal);
+    let neg_x = -perpendicular_velocity.x;
+    let neg_y = -perpendicular_velocity.y;
+    let neg_perpendicular_velocity: Vector2d<T> = Vector2d { x: neg_x , y: neg_y };
+
+    // Calculate the component of the incoming velocity parallel to the collision surface
+    let parallel_velocity: Vector2d<T> = *incoming_velocity - perpendicular_velocity;
+
+    // The reflected perpendicular velocity is reversed and scaled by the COR
+    let reflected_perpendicular_velocity: Vector2d<T> = neg_perpendicular_velocity * coefficient_of_restitution;
+
+    // The reflected velocity is the sum of the reflected perpendicular and parallel components
+    reflected_perpendicular_velocity + parallel_velocity
+}    
+
+pub fn calculate_reflection_vector_p(
+    incoming_velocity: &Point,
+    collision_normal: &Point,
+    coefficient_of_restitution: f32,
+) -> Point {
+    // Ensure the normal is normalized (unit length)
+    // let mag = collision_normal.magnitude()
+    let normal = collision_normal.normalize();
+
+    // Calculate the component of the incoming velocity perpendicular to the collision surface
+    let perpendicular_velocity = normal * incoming_velocity.dot_product(normal);
+    let neg_x = -perpendicular_velocity.x;
+    let neg_y = -perpendicular_velocity.y;
+    let neg_perpendicular_velocity = Point { x: neg_x , y: neg_y };
+
+    // Calculate the component of the incoming velocity parallel to the collision surface
+    let parallel_velocity = *incoming_velocity - perpendicular_velocity;
+
+    // The reflected perpendicular velocity is reversed and scaled by the COR
+    let reflected_perpendicular_velocity = neg_perpendicular_velocity * coefficient_of_restitution as i32;
+
+    // The reflected velocity is the sum of the reflected perpendicular and parallel components
+    reflected_perpendicular_velocity + parallel_velocity
+}    
+

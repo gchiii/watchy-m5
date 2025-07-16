@@ -18,7 +18,7 @@ use pcf8563::Pcf8563;
 
 use rand::{Rng, SeedableRng};
 use static_cell::StaticCell;
-use watchy_m5::buttons::{btn_task, initialize_buttons, INPUT_BUTTONS};
+use watchy_m5::{buttons::{btn_task, initialize_buttons, INPUT_BUTTONS}, sprites::vectors::VectorComponent};
 use watchy_m5::display::{StickDisplay, StickDisplayBuilder, HEIGHT, WIDTH};
 use watchy_m5::gfx::{Sprite, SpriteContainer};
 use watchy_m5::buzzer::{Buzzer, BuzzerChannel, BuzzerState};
@@ -44,7 +44,7 @@ use embedded_text::{
 };
 // use embedded_layout::{layout::linear::LinearLayout, prelude::*};
 
-extern crate alloc;
+// extern crate alloc;
 
 
 // #[embassy_executor::task]
@@ -330,8 +330,8 @@ async fn display_task_worker(mut display: StickDrawTarget<'static>, mut esp_rng:
     info!("bounce_box: {:?}", bounce_box);
 
     let circle = Circle::with_center(bounce_box.bounding_box().center(), 15);
-    let mut ball = Sprite::new("ball1", PrimitiveStyle::with_fill(Rgb565::YELLOW), thin_stroke, circle.translate(Point { x: 30, y: 25 }));
-    let mut ball2 = Sprite::new("ball2", PrimitiveStyle::with_fill(Rgb565::MAGENTA), thin_stroke, circle.translate(Point { x: -30, y: -25 }));
+    let mut ball = Sprite::<Rgb565,f32>::new("ball1", PrimitiveStyle::with_fill(Rgb565::YELLOW), thin_stroke, circle.translate(Point { x: 30, y: 25 }));
+    let mut ball2 = Sprite::<Rgb565,f32>::new("ball2", PrimitiveStyle::with_fill(Rgb565::MAGENTA), thin_stroke, circle.translate(Point { x: -30, y: -25 }));
     // let mut ball: BouncyBall<Rgb565> = BouncyBall::new(fill, circle, Point::zero());
     ball.set_line_style(PrimitiveStyle::with_stroke(Rgb565::BLACK, 1));
     // ball.set_boundary(bounce_box);
@@ -410,9 +410,12 @@ async fn display_task_worker(mut display: StickDrawTarget<'static>, mut esp_rng:
     }
 }
 
-fn ball_logic<D>(target: &mut D, bounce_box: &Rectangle, bb_style: PrimitiveStyle<Rgb565>, ball: &mut Sprite<Rgb565>) -> Result<(), <D as DrawTarget>::Error>
+fn ball_logic<D,T>(target: &mut D, bounce_box: &Rectangle, bb_style: PrimitiveStyle<Rgb565>, ball: &mut Sprite<Rgb565, T>) -> Result<(), <D as DrawTarget>::Error>
 where
-    D: embedded_graphics::prelude::DrawTarget<Color = Rgb565> 
+    D: embedded_graphics::prelude::DrawTarget<Color = Rgb565>,
+    i32: From<T>, 
+    T: VectorComponent + core::convert::From<i32> + core::ops::Neg<Output = T> 
+
 {
     let bounce_box = bounce_box.into_styled(bb_style);
     if let Err(_e) = bounce_box.draw(target) {

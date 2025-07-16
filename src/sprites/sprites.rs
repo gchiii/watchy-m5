@@ -158,7 +158,7 @@ impl<'a> Transform for SpritePrimitive<'a> {
 }
 
 impl<'a> SurfaceNormal for SpritePrimitive<'a> {
-    fn surface_normal(&self, point: impl Into<GfxVec> + Into<Point> + Copy) -> GfxVec {
+    fn surface_normal(&self, point: impl Into<Point> + Copy) -> Point {
         match self {
             SpritePrimitive::Line(line) => line.surface_normal(point),
             SpritePrimitive::Circle(circle) => circle.surface_normal(point),
@@ -168,7 +168,7 @@ impl<'a> SurfaceNormal for SpritePrimitive<'a> {
         }
     }
     
-    fn distance(&self, point: impl Into<GfxVec> + Into<Point> + Copy) -> f32 {
+    fn distance(&self, point: impl Into<Point> + Copy) -> f32 {
         match self {
             SpritePrimitive::Line(line) => line.distance(point),
             SpritePrimitive::Circle(circle) => circle.distance(point),

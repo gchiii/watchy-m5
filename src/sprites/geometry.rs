@@ -1,6 +1,8 @@
 use embedded_graphics::{geometry::AnchorPoint, prelude::{Point, Size}, primitives::{Circle, Line, Polyline, Rectangle, Triangle}};
 
-use crate::gfx::GfxVec;
+use crate::sprites::vectors::{SpriteVector, VectorComponent};
+
+// use crate::gfx::GfxVec;
 
 
 pub trait PointExt {
@@ -44,11 +46,11 @@ pub trait Area {
 }
 
 pub trait SurfaceNormal {
-    /// compute the normalized surface normal between self and point
-    fn surface_normal(&self, point: impl Into<GfxVec> + Into<Point> + Copy) -> GfxVec;
+    /// compute the Vector Normal to the Surface between self and point as a Point
+    fn surface_normal(&self, point: impl Into<Point> + Copy) -> Point;
 
     /// distance from nearest surface to point
-    fn distance(&self, point: impl Into<GfxVec> + Into<Point> + Copy) -> f32;
+    fn distance(&self, point: impl Into<Point> + Copy) -> f32;
 }
 
 pub trait ClosestEdge {
@@ -56,19 +58,22 @@ pub trait ClosestEdge {
 }
 
 
+
+
+
 impl SurfaceNormal for Rectangle {
-    fn surface_normal(&self, point: impl Into<GfxVec> + Into<Point> + Copy) -> GfxVec {
+    fn surface_normal(&self, point: impl Into<Point> + Copy) -> Point {
         self.closest_edge(point.into()).surface_normal(point)
     }
     
-    fn distance(&self, point: impl Into<GfxVec> + Into<Point> + Copy) -> f32 {
+    fn distance(&self, point: impl Into<Point> + Copy) -> f32 {
         self.closest_edge(point.into()).distance(point)
     }
 }
 
 impl SurfaceNormal for Line {
 
-    fn surface_normal(&self, point: impl Into<GfxVec> + Into<Point> + Copy) -> GfxVec {
+    fn surface_normal(&self, point: impl Into<Point> + Copy) -> Point {
         let point: Point = point.into();
         let closest_point = {
             let line_vec = self.delta();
@@ -87,10 +92,10 @@ impl SurfaceNormal for Line {
                 }
             }
         };
-        GfxVec::from(closest_point - point).normalize()
+        closest_point - point
     }
     
-    fn distance(&self, point: impl Into<GfxVec> + Into<Point> + Copy) -> f32 {
+    fn distance(&self, point: impl Into<Point> + Copy) -> f32 {
         let point: Point = point.into();
         let closest_point = {
             let line_vec = self.delta();
@@ -145,12 +150,12 @@ impl ClosestEdge for Triangle {
 }
 
 impl SurfaceNormal for Triangle {
-    fn surface_normal(&self, point: impl Into<GfxVec> + Into<Point> + Copy) -> GfxVec {
+    fn surface_normal(&self, point: impl Into<Point> + Copy) -> Point {
         let point: Point = point.into();
         self.closest_edge(point).surface_normal(point)
     }
     
-    fn distance(&self, point: impl Into<GfxVec> + Into<Point> + Copy) -> f32 {
+    fn distance(&self, point: impl Into<Point> + Copy) -> f32 {
         let point: Point = point.into();
         self.closest_edge(point).distance(point)
     }
@@ -179,12 +184,12 @@ impl<'a> ClosestEdge for Polyline<'a> {
 }
 
 impl<'a> SurfaceNormal for Polyline<'a> {
-    fn surface_normal(&self, point: impl Into<GfxVec> + Into<Point> + Copy) -> GfxVec {
+    fn surface_normal(&self, point: impl Into<Point> + Copy) -> Point {
         let point: Point = point.into();
         self.closest_edge(point).surface_normal(point)
     }
     
-    fn distance(&self, point: impl Into<GfxVec> + Into<Point> + Copy) -> f32 {
+    fn distance(&self, point: impl Into<Point> + Copy) -> f32 {
         let point: Point = point.into();
         self.closest_edge(point).distance(point)
     }
@@ -192,12 +197,12 @@ impl<'a> SurfaceNormal for Polyline<'a> {
 
 impl SurfaceNormal for Circle {
     // compute the normalized surface normal between self and point
-    fn surface_normal(&self, point: impl Into<GfxVec> + Into<Point> + Copy) -> GfxVec {
+    fn surface_normal(&self, point: impl Into<Point> + Copy) -> Point {
         let point: Point = point.into();
-        GfxVec::from(self.center() - point).normalize()
+        self.center() - point
     }
     
-    fn distance(&self, point: impl Into<GfxVec> + Into<Point> + Copy) -> f32 {
+    fn distance(&self, point: impl Into<Point> + Copy) -> f32 {
         (self.center().distance(point.into()) as u32 - (self.diameter / 2)) as f32
     }
 }
@@ -229,3 +234,29 @@ impl ClosestEdge for Rectangle {
         Line::new(closest1, closest2)
     }
 }
+
+
+fn intersect_lines(first_line: Line, other_line: Line) -> Option<Point> {        
+    let a1 = micromath::F32((first_line.end.y - first_line.start.y) as f32);
+    let b1 = micromath::F32((first_line.start.x - first_line.end.x) as f32);
+    let c1 = a1 * first_line.start.x as f32 + b1 * first_line.start.y as f32;
+
+    let a2 = micromath::F32((other_line.end.y - other_line.start.y) as f32);
+    let b2 = micromath::F32((other_line.start.x - other_line.end.x) as f32);
+    let c2 = a2 * other_line.start.x as f32 + b2 * other_line.start.y as f32;
+
+    let delta = a1 * b2 - a2 * b1;
+
+    if delta == 0.0 {
+        return None;
+    }
+
+    let x = (b2 * c1 - b1 * c2) / delta;
+    let y = (a1 * c2 - a2 * c1) / delta;
+    Some(Point {
+        x: x.round().0 as i32,
+        y: y.round().0 as i32,
+    })
+}
+
+

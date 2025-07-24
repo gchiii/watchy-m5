@@ -96,6 +96,7 @@ embedded-canvas = { version = "0.3.1", default-features = false, features = ["al
 esp-bootloader-esp-idf = { version = "0.1.0", features = ["defmt"] }
 parry2d = { version = "0.21.1", features = ["required-features"], default-features = false }
 num-traits = { version = "0.2.19", default-features = false, features = ["libm"] }
+embedded-physics = {version = "*", path = "../embedded-physics" }
 # geo = "0.30.0"
 # esp-display-interface-spi-dma = { version = "0.2.0", features = ["esp32"] }
 # lcd-async = { git = "https://github.com/okhsunrog/lcd-async", rev = "76afd7109bab7070cebebf72bfebfdbd5be421aa"}

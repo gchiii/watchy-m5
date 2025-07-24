@@ -67,6 +67,13 @@ const DMA_BUFLEN: usize = 4096;
 static DISPLAY_BUF: StaticCell<[u8; BUFLEN]> = StaticCell::new();
 
 
+// pub type StickDisplaySpiDmaBusAsync<'d> = esp_hal::spi::master::SpiDmaBus<'d, esp_hal::Async>;
+pub type StickDisplayExclusiveDevice<'d, SBus>  = embedded_hal_bus::spi::ExclusiveDevice<SBus, Output<'d>, esp_hal::delay::Delay>;
+pub type StickDisplaySpiInterface<'d, SBus> = mipidsi::interface::SpiInterface<'d, StickDisplayExclusiveDevice<'d, SBus>, Output<'d>>;
+
+pub type CrazyDisplay<'d, SBus> = StickDisplay<'d, StickDisplaySpiInterface<'d, SBus>, Output<'d>>;
+
+
 pub struct StickDisplayBuilder<'d, SBus> {
     dc: Option<Output<'d>>,
     rst: Option<Output<'d>>,
@@ -157,7 +164,7 @@ impl<'d, SBus: embedded_hal::spi::SpiBus> StickDisplayBuilder<'d, SBus> {
         }
     }
 
-    pub fn create_display(self, dc: impl OutputPin + 'd, rst: impl OutputPin + 'd, cs: impl OutputPin + 'd) -> StickDisplay<'d, interface::SpiInterface<'d, ExclusiveDevice<SBus, Output<'d>, esp_hal::delay::Delay>, Output<'d>>, Output<'d>>{
+    pub fn create_display(self, dc: impl OutputPin + 'd, rst: impl OutputPin + 'd, cs: impl OutputPin + 'd) -> StickDisplay<'d, StickDisplaySpiInterface<'d, SBus>, Output<'d>>{
         let mut display_delay = esp_hal::delay::Delay::new();
 
         let dc = Output::new(dc, Level::Low, OutputConfig::default());

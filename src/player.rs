@@ -128,7 +128,8 @@ impl<'p> Player<'p> {
 
     pub fn new(buzz: BuzzerSender<'p>, rx: PlayerReceiver<'p>) -> Self {
         Self { 
-            buzz, _phantom: PhantomData, 
+            buzz, 
+            _phantom: PhantomData, 
             state: PlayerState::default(),
             rx,
         }

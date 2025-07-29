@@ -1,10 +1,13 @@
 #![no_std]
 #![no_main]
+#![feature(slice_as_array)]
 
+use allocator_api2::vec::Vec;
 use defmt::{error, info, trace};
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Instant, Timer};
 use embedded_canvas::Canvas;
+use embedded_graphics_framebuf::FrameBuf;
 use embedded_hal_bus::i2c::RefCellDevice;
 
 use embedded_layout::{align::{horizontal, vertical, Align}, prelude::Chain, View};
@@ -19,22 +22,22 @@ use pcf8563::Pcf8563;
 
 use rand::{Rng, SeedableRng};
 use static_cell::StaticCell;
-use watchy_m5::{buttons::{btn_task, initialize_buttons, INPUT_BUTTONS}};
+use watchy_m5::{buttons::{btn_task, initialize_buttons, INPUT_BUTTONS}, display::{DisplayError, SpiBusMutex, StickDisplaySpiDmaBusAsync, StickDisplaySpiDmaBusBlocking, StickDisplayT, StickFrameBuf, StickFrameBuf2}};
 use watchy_m5::display::{StickDisplay, StickDisplayBuilder, HEIGHT, WIDTH};
 use watchy_m5::buzzer::{Buzzer, BuzzerChannel, BuzzerState};
 use watchy_m5::music::Song;
 use watchy_m5::player::{player_task, PlayerCmd, Player};
 use watchy_m5::pink_panther;
 
-use embassy_sync::
-    channel::Channel 
+use embassy_sync::{
+    channel::Channel, mutex::Mutex} 
 ;
 
 use {esp_backtrace as _, esp_println as _};
 
 use core::cell::RefCell;
 use embedded_graphics::{
-    geometry::AnchorX, mono_font::{ascii::FONT_10X20, MonoTextStyle}, pixelcolor::Rgb565, prelude::*, primitives::{Circle, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle, StrokeAlignment, Triangle}, text::Text
+    geometry::AnchorX, mono_font::{ascii::FONT_10X20, MonoTextStyle}, pixelcolor::{raw::LittleEndian, Rgb565}, prelude::*, primitives::{Circle, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle, StrokeAlignment, Triangle}, text::Text
 };
 
 use embedded_text::{
@@ -151,10 +154,8 @@ async fn main(spawner: Spawner) {
     // Set GPIO35 as an input
     let button_c = Input::new(peripherals.GPIO35, InputConfig::default());
 
-
-
     // lets try to get the interface for the display
-    let mut display: StickDisplay<'_, mipidsi::interface::SpiInterface<'_, embedded_hal_bus::spi::ExclusiveDevice<esp_hal::spi::master::SpiDmaBus<'_, esp_hal::Async>, Output<'_>, esp_hal::delay::Delay>, Output<'_>>, Output<'_>> = {
+    let mut display = {
         let backlight = peripherals.GPIO27;
         let sclk = peripherals.GPIO13;
         let mosi = peripherals.GPIO15;
@@ -162,11 +163,15 @@ async fn main(spawner: Spawner) {
         let rst = peripherals.GPIO12;
         let cs = peripherals.GPIO5;
 
-        StickDisplayBuilder::new(peripherals.SPI2, sclk, mosi)
+        let bld = StickDisplayBuilder::new(peripherals.SPI2, sclk, mosi)
             .with_bl(backlight)
             .with_dma(peripherals.DMA_SPI2)
             .into_async()
-            .create_display(dc, rst, cs) 
+            // .into_mutex()
+            .create_display(dc, rst, cs);
+            // .build_async(dc, rst, cs)
+            // .await;
+        bld
     };
 
     display.on();
@@ -178,7 +183,7 @@ async fn main(spawner: Spawner) {
     let buzzer = Buzzer::new(ledc, buzzer_pin, snd_rx);
 
     // TODO: Spawn some tasks
-    let mut rng = esp_hal::rng::Rng::new(peripherals.RNG);
+    let rng = esp_hal::rng::Rng::new(peripherals.RNG);
     // static WINDOW: StaticCell<CCanvas<Rgb565, 125, 142>> = StaticCell::new();
     // let window = WINDOW.init_with(|| CCanvas::<Rgb565, 125, 142>::new());
     if let Err(e) = spawner.spawn(display_task(display, rng)) {
@@ -235,7 +240,7 @@ async fn main(spawner: Spawner) {
         led.toggle();
 
         match rtc.datetime() {
-            Ok(dt) => {
+            Ok(_dt) => {
                 // info!("datetime {:02}:{:02}:{:02} ", dt.hour, dt.minute, dt.second);
             },
             Err(e) => {
@@ -256,25 +261,32 @@ async fn main(spawner: Spawner) {
 }
 
 
-type StickDrawTarget<'d> = StickDisplay<'d, mipidsi::interface::SpiInterface<'d, embedded_hal_bus::spi::ExclusiveDevice<esp_hal::spi::master::SpiDmaBus<'d, esp_hal::Async>, Output<'d>, esp_hal::delay::Delay>, Output<'d>>, Output<'d>>;
+type StickDrawTarget<'d> = StickDisplayT<'d, StickDisplaySpiDmaBusAsync<'d>>;
+// type StickDrawTarget<'d> = StickDisplay<'d, MySpiInterface<'d>, Output<'d>>;
+// type StickDrawTarget<'d> = CrazyDisplay<'d, StickDisplaySpiDmaBusBlocking<'d>>;
 
 #[embassy_executor::task]
-async fn display_task(mut display: StickDrawTarget<'static>, mut esp_rng: esp_hal::rng::Rng) {
-    display_task_worker(display, esp_rng).await;
+async fn display_task(display: StickDrawTarget<'static>, esp_rng: esp_hal::rng::Rng) {
+    if let Err(e) = display_task_worker(display, esp_rng).await {
+        error!("display error: {}!", e);
+        panic!()
+    }
 }
 
-async fn display_task_worker(mut display: StickDrawTarget<'static>, mut esp_rng: esp_hal::rng::Rng) {
+// static FB_DATA: StaticCell<Vec<Rgb565, esp_alloc::InternalMemory>> = StaticCell::new();
+
+async fn display_task_worker(mut display: StickDrawTarget<'static>, mut esp_rng: esp_hal::rng::Rng) -> Result<(), DisplayError>{
 
     // Alternating color
     let colors = [Rgb565::RED, Rgb565::GREEN, Rgb565::BLUE];
     // Create styles used by the drawing operations.
     let thin_stroke = PrimitiveStyle::with_stroke(Rgb565::BLACK, 1);
     let thick_stroke = PrimitiveStyle::with_stroke(Rgb565::BLACK, 3);
-    let border_stroke = PrimitiveStyleBuilder::new()
-        .stroke_color(Rgb565::BLACK)
-        .stroke_width(3)
-        .stroke_alignment(StrokeAlignment::Inside)
-        .build();
+    // let border_stroke = PrimitiveStyleBuilder::new()
+    //     .stroke_color(Rgb565::BLACK)
+    //     .stroke_width(3)
+    //     .stroke_alignment(StrokeAlignment::Inside)
+    //     .build();
     let ball_bound_sb = PrimitiveStyleBuilder::new()
         .stroke_color(Rgb565::BLACK)
         .stroke_width(3)
@@ -302,8 +314,8 @@ async fn display_task_worker(mut display: StickDrawTarget<'static>, mut esp_rng:
             .align_to(&display.bounding_box(), horizontal::Center, vertical::Top)
     };
     let mut hello_box = {
-        let text_x: i32 = WIDTH.into();
-        let text_y: i32 = (HEIGHT / 2).into();
+        let text_x: i32 = WIDTH as i32;
+        let text_y: i32 = (HEIGHT / 2) as i32;
         let text = "Hello World ^_^;";
         let text_style = MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE);
         let bounds = Text::new(text, Point::new(text_x, text_y), text_style)
@@ -317,16 +329,17 @@ async fn display_task_worker(mut display: StickDrawTarget<'static>, mut esp_rng:
         TextBox::with_textbox_style(text, bounds, text_style, textbox_style)
     };
 
+    display.on();
     
     hello_box.align_to_mut(&text_box, horizontal::NoAlignment, vertical::TopToBottom);
 
     let bb_tl = Point::new(0,88);
-    // let mut ball_canvas: CCanvasAt<Rgb565, 135, 152> = CCanvasAt::new(Point::new(0, 88));
-    let mut ball_canvas= Canvas::<Rgb565>::new(Size::new(135, 152)).place_at(bb_tl);
-    let bounce_box = ball_canvas.bounding_box();
-    // let bb_tl = Point::new(0, hello_box.bounding_box().anchor_y(AnchorY::Bottom)+1);
-    // let bounce_box = Rectangle::with_corners(bb_tl, display.bounding_box().anchor_point(AnchorPoint::BottomRight));
+    // let mut ball_canvas= Canvas::<Rgb565>::new(Size::new(135, 152)).place_at(bb_tl);
+    // let bounce_box = ball_canvas.bounding_box();
+    let bounce_box = Rectangle::new(bb_tl, Size::new(135, 152));
 
+
+    let sub_window_r = Rectangle::with_corners(display.bounding_box().top_left, bounce_box.anchor_point(embedded_graphics::geometry::AnchorPoint::TopRight));
     info!("bounce_box: {:?}", bounce_box);
 
     let circle = Circle::with_center(bounce_box.bounding_box().center(), 15);
@@ -341,9 +354,6 @@ async fn display_task_worker(mut display: StickDrawTarget<'static>, mut esp_rng:
 
     let mut fun_rng = rand::rngs::SmallRng::from_rng(&mut esp_rng);
 
-    
-    display.on();
-
     ball.set_direction_from_angle(Angle::from_degrees(fun_rng.random_range(0..360) as f32));
     ball2.set_direction_from_angle(Angle::from_degrees(fun_rng.random_range(0..360) as f32));
     let mut sprite_container = SpriteContainer::new(bounce_box);
@@ -357,104 +367,85 @@ async fn display_task_worker(mut display: StickDrawTarget<'static>, mut esp_rng:
     let _ = sprite_container.add_sprite(stationary);
     {
         let t_vertex1 = stationary_shape.top_left + Point::new(-40, -30);
-        let mut blah = Sprite::new("triangle", Circle::with_center(t_vertex1, 25))
+        let mut blah = Sprite::new("circle", Circle::with_center(t_vertex1, 25))
             .with_style(PrimitiveStyle::with_fill(Rgb565::MAGENTA))
             .with_line_style(thick_stroke);
         blah.set_direction_from_angle(Angle::from_degrees(fun_rng.random_range(0..360) as f32));
         let _ = sprite_container.add_sprite(blah);
     }
-    // {
-    //     let t_vertex1 = stationary_shape.top_left + Point::new(-40, -30);
-    //     let t_v2 = t_vertex1 + Point::new(-10, -25);
-    //     let t_v3 = t_vertex1 + Point::new(10, -25);
-    //     let mut blah = Sprite::new("triangle", Triangle::new(t_vertex1, t_v2, t_v3))
-    //         .with_style(PrimitiveStyle::with_fill(Rgb565::MAGENTA))
-    //         .with_line_style(thick_stroke);
-    //     blah.set_direction_from_angle(Angle::from_degrees(fun_rng.random_range(0..360) as f32));
-    //     let _ = sprite_container.add_sprite(blah);
-    // }
+    {
+        let t_vertex1 = stationary_shape.top_left + Point::new(-40, -30);
+        let t_v2 = t_vertex1 + Point::new(-10, -25);
+        let t_v3 = t_vertex1 + Point::new(10, -25);
+        let mut blah = Sprite::new("triangle", Triangle::new(t_vertex1, t_v2, t_v3))
+            .with_style(PrimitiveStyle::with_fill(Rgb565::MAGENTA))
+            .with_line_style(thick_stroke);
+        blah.set_direction_from_angle(Angle::from_degrees(fun_rng.random_range(0..360) as f32));
+        let _ = sprite_container.add_sprite(blah);
+    }
 
     let mut counter = 0;
     let mut last_hello_tick = Instant::now();
     let mut last_bounce_tick = Instant::now();
     let mut bb_style: PrimitiveStyle<Rgb565> = ball_bound_sb.build();
+    let mut fb_data = StickFrameBuf2::create_vec( bounce_box.size.width as usize, bounce_box.size.height as usize);
+    let fun = StickFrameBuf2::new(fb_data.as_mut_slice());
+    let mut fb = FrameBuf::new(fun, bounce_box.size.width as usize, bounce_box.size.height as usize);
+    // let mut fb = FrameBuf::new_with_origin(fun, bounce_box.size.width as usize, bounce_box.size.height as usize, Point::zero());
     loop {
         
         let bg_color = colors[(counter / 8) % colors.len()];
+        if last_bounce_tick.elapsed() >= Duration::from_millis(50) {
+            let window_r = bounce_box;
+            
+            let now = Instant::now();
+            last_bounce_tick = now;
+            sprite_container.update_positions();
+            {
+                let mut fb = fb.translated(-bounce_box.top_left);
+                let bounce_box = bounce_box.into_styled(bb_style);
+                bounce_box.draw(&mut fb)?;    
+                sprite_container.draw(&mut fb)?;
+            }
+            
+            let r = Rectangle::new(window_r.top_left, fb.size());
+            let blah = fb.data.0.iter();
+            if let Err(e) = display.fill_contiguous(&r, blah.copied()) {
+                error!("problem: {}", e);
+            }
+            {
+                let elapsed = now.elapsed();
+                if elapsed.as_ticks() > 300 { info!("update_position plus draw took {}", elapsed); }
+            }
+        }
         
         if last_hello_tick.elapsed() >= Duration::from_secs(1) {
             counter += 1;
-            // let mut display = get_raw_fb(frame_buffer);
+            let mut sub_window = display.clipped(&sub_window_r);
             // Fill the display with alternating colors every 8 frames
-            // display.clear(bg_color).unwrap();
+            sub_window.clear(bg_color)?;
             bb_style = ball_bound_sb.fill_color(bg_color).build();
             // Draw text
-            if let Err(_e) = hello_box.draw(&mut display) {
+            if let Err(_e) = hello_box.draw(&mut sub_window) {
                 error!("unable to draw hello_box.");
             }
 
             let translation = {
                 if hello_box.bounds.anchor_x(AnchorX::Right) <= 0 {
-                    Point::new(WIDTH.into(), 0)
+                    Point::new(WIDTH as i32, 0)
                 } else {
                     Point::new(-10, 0)
                 }
             };
             embedded_graphics::prelude::Transform::translate_mut(&mut hello_box, translation);
             last_hello_tick = Instant::now();
-            text_box.draw(&mut display).unwrap();
+            text_box.draw(&mut sub_window)?;
         }
 
-        if last_bounce_tick.elapsed() >= Duration::from_millis(50) {
-            let now = Instant::now();
-            last_bounce_tick = now;
-            sprite_container.update_positions();
-            // info!("update_position took {}", now.elapsed());
-            let bounce_box = bounce_box.into_styled(bb_style);
-            if let Err(_e) = bounce_box.draw(&mut ball_canvas) {
-                error!("error drawing bounce_box");
-            }
-
-            let _ = sprite_container.draw(&mut ball_canvas);
-            ball_canvas.draw(&mut display).unwrap();
-        }
-
-        Timer::after(Duration::from_millis(10)).await;
+        Timer::after(Duration::from_millis(50)).await;
     }
 }
 
-fn ball_logic<D,T>(target: &mut D, bounce_box: &Rectangle, bb_style: PrimitiveStyle<Rgb565>, ball: &mut Sprite<Rgb565>) -> Result<(), <D as DrawTarget>::Error>
-where
-    D: embedded_graphics::prelude::DrawTarget<Color = Rgb565>,
-    i32: From<T>, 
-    T: VecComp,
-    SpriteVector<T>: Velocity,
-{
-    let bounce_box = bounce_box.into_styled(bb_style);
-    if let Err(_e) = bounce_box.draw(target) {
-        error!("error drawing bounce_box");
-        return Err(_e);
-    }
-    ball.move_object();
-    match ball.draw(target) {
-        Ok(_) => {
-            // info!("ball at {}", ball.center());
-            // if let Some(d) = ball.boundary_collision(&bounce_box.bounding_box()) {
-            //     info!("before bounce vec {}", ball.vector);
-            //     ball.set_direction_from_angle(d);
-            //     info!("after bounce vec {}", ball.vector);
-            //     // ball.move_step(2);
-            // } else {
-            //     // ball.move_step(1);
-            // }
-        },
-        Err(_e) => {
-            error!("error drawing bouncy ball");
-            return Err(_e);
-        },
-    }
-    Ok(())
-}
 
 
 

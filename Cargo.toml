@@ -7,6 +7,12 @@ version = "0.1.0"
 name = "watchy-m5"
 path = "./src/bin/main.rs"
 
+[features]
+default = ["mipidsi", "defmt"]
+mipidsi = []
+defmt = []
+lcdasync = []
+
 [dependencies]
 defmt = { version = "1.0.1", features = ["alloc"] }
 embassy-net = { version = "0.7.0", features = [
@@ -56,7 +62,7 @@ embassy-executor = { version = "0.7.0", features = [
   "task-arena-size-20480",
   # "task-arena-size-40960",
 ] }
-embassy-sync = { version = "0.6.2", features = ["defmt"] }
+embassy-sync = { version = "0.7.0", features = ["defmt"] }
 embassy-futures = { version = "0.1.1", features = ["defmt"] }
 embassy-embedded-hal = { version = "0.3.0" }
 embassy-time = { version = "0.4.0", features = ["generic-queue-8", "defmt-timestamp-uptime"] }
@@ -99,7 +105,8 @@ num-traits = { version = "0.2.19", default-features = false, features = ["libm"]
 embedded-physics = {version = "*", path = "../embedded-physics" }
 # geo = "0.30.0"
 # esp-display-interface-spi-dma = { version = "0.2.0", features = ["esp32"] }
-# lcd-async = { git = "https://github.com/okhsunrog/lcd-async", rev = "76afd7109bab7070cebebf72bfebfdbd5be421aa"}
+lcd-async = { git = "https://github.com/okhsunrog/lcd-async", rev = "6493bf9855df4961ef931eab0531a5472ce0e4a6"}
+embedded-graphics-framebuf = "0.5.0"
 
 
 

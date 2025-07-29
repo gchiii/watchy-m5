@@ -218,7 +218,7 @@ impl Song<'_> {
                     duration_ms
                 },
             } as u64;
-            Timer::after(Duration::from_millis(duration_ms)).await;
+            // Timer::after(Duration::from_millis(duration_ms)).await;
             Some(self.index)
         } else {
             self.index = 0;

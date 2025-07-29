@@ -6,7 +6,7 @@ use {esp_backtrace as _, esp_println as _};
 use thiserror_no_std::Error;
 use defmt::{error, trace};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
-use embassy_time::{Duration, Timer};
+use embassy_time::{Duration, Instant, Timer};
 use esp_hal::{ledc::{channel::{self, ChannelIFace}, timer::{self, TimerIFace}, HighSpeed, Ledc}, time::Rate};
 use esp_hal::ledc::channel::Error as LedcChannelError;
 use esp_hal::ledc::timer::Error as LedcTimerError;
@@ -87,9 +87,19 @@ impl<'a> Buzzer<'a> {
 
     async fn buzz(&self, note: BuzzerNote) -> Result<BuzzerState, BuzzerError> {
         match note {
-            BuzzerNote::Rest(_) => self.silence().await,
+            BuzzerNote::Rest(dur) => {
+                let now = Instant::now();
+                let expires_at = now + Duration::from_millis_floor(dur as u64);                
+                let r = self.silence().await;
+                Timer::at(expires_at).await;
+                r
+            },
             BuzzerNote::Sound(rate, dur) => {
-                self.sound(rate, dur as u64).await
+                let now = Instant::now();
+                let expires_at = now + Duration::from_millis_floor(dur as u64);
+                let r = self.sound(rate, dur as u64).await;
+                Timer::at(expires_at).await;
+                r
             },
         }
     }
@@ -110,32 +120,38 @@ impl<'a> Buzzer<'a> {
                 duty_pct: 0,
                 pin_config: channel::config::PinConfig::PushPull,
             })?;
-        Timer::after(Duration::from_millis(10)).await;
+        Timer::after(Duration::from_millis(2)).await;
         Ok(BuzzerState::Stopped)
     }
     async fn sound(&self, freq: Rate, dur: u64) -> Result<BuzzerState, BuzzerError> {
-            let mut hstim = self.ledc.timer::<HighSpeed>(timer::Number::Timer0);
-            trace!("frequency = {}", freq);
-            hstim
-                .configure(timer::config::Config {
-                    duty: timer::config::Duty::Duty10Bit,
-                    clock_source: timer::HSClockSource::APBClk,
-                    frequency: freq,
-                })?;
-    
-            let mut channel0 = self.ledc.channel(channel::Number::Channel0, unsafe { self.pin.clone_unchecked() });
-            channel0
-                .configure(channel::config::Config {
-                    timer: &hstim,
-                    duty_pct: 50,
-                    pin_config: channel::config::PinConfig::PushPull,
-                })?;
-            let pause_duration = dur / 10; // 10% of duration_ms
-    
-            Timer::after(Duration::from_millis(dur - pause_duration)).await;
-            channel0.set_duty(0)?;
-            Timer::after(Duration::from_millis(pause_duration)).await;
-            Ok(BuzzerState::Stopped)
+        let pause_duration = dur / 10; // 10% of duration_ms
+        // let now = Instant::now();
+        // let snd_expire_at = now + Duration::from_millis_floor(dur - pause_duration);
+        // let expires_at = now + Duration::from_millis_floor(dur);
+        // Timer::at(expires_at).await;
+        let mut hstim = self.ledc.timer::<HighSpeed>(timer::Number::Timer0);
+        trace!("frequency = {}", freq);
+        hstim
+            .configure(timer::config::Config {
+                duty: timer::config::Duty::Duty10Bit,
+                clock_source: timer::HSClockSource::APBClk,
+                frequency: freq,
+            })?;
+
+        let mut channel0 = self.ledc.channel(channel::Number::Channel0, unsafe { self.pin.clone_unchecked() });
+        channel0
+            .configure(channel::config::Config {
+                timer: &hstim,
+                duty_pct: 50,
+                pin_config: channel::config::PinConfig::PushPull,
+            })?;
+        
+        // Timer::at(snd_expire_at).await;
+        Timer::after(Duration::from_millis(dur - pause_duration)).await;
+        channel0.set_duty(0)?;
+        // Timer::at(expires_at).await;
+        Timer::after(Duration::from_millis(pause_duration)).await;
+        Ok(BuzzerState::Stopped)
     }
 
 }

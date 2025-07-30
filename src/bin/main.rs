@@ -13,15 +13,16 @@ use embedded_layout::{align::{horizontal, vertical, Align}, prelude::Chain, View
 use embedded_physics::sprites::{Sprite, SpriteContainer};
 use esp_alloc::HeapStats;
 use esp_hal::{
-    clock::CpuClock, gpio::{Input, InputConfig, Io, Level, Output, OutputConfig}, handler, i2c::master::{BusTimeout, Config as I2cConfig, I2c}, ledc::Ledc, ram, time::Rate, timer::timg::TimerGroup
+    clock::CpuClock, gpio::{Input, InputConfig, Io, Level, Output, OutputConfig}, handler, i2c::master::{BusTimeout, Config as I2cConfig, I2c}, ledc::Ledc, ram, system::{CpuControl, Stack}, time::Rate, timer::timg::TimerGroup
 };
     
+use esp_hal_embassy::Executor;
 use mpu6886::Mpu6886;
 use pcf8563::Pcf8563;
 
 use rand::{Rng, SeedableRng};
 use static_cell::StaticCell;
-use watchy_m5::{buttons::{btn_task, initialize_buttons, INPUT_BUTTONS}, display::{DisplayError, StickDisplaySpiDmaBusAsync, StickDisplayT, StickFrameBuf}};
+use watchy_m5::{buttons::{btn_task, initialize_buttons, INPUT_BUTTONS}, display::{DisplayError, StickDisplaySpiDmaBusAsync, StickDisplaySpiDmaBusBlocking, StickDisplayT, StickFrameBuf}};
 use watchy_m5::display::{StickDisplayBuilder, HEIGHT, WIDTH};
 use watchy_m5::buzzer::{Buzzer, BuzzerChannel, BuzzerState};
 use watchy_m5::music::Song;
@@ -34,7 +35,7 @@ use embassy_sync::
 
 use {esp_backtrace as _, esp_println as _};
 
-use core::cell::RefCell;
+use core::{cell::RefCell, ptr::addr_of_mut};
 use embedded_graphics::{
     geometry::AnchorX, mono_font::{ascii::FONT_10X20, MonoTextStyle}, pixelcolor::Rgb565, prelude::*, primitives::{Circle, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle, StrokeAlignment, Triangle}, text::Text
 };
@@ -68,6 +69,9 @@ async fn sound_task(mut buzzer: Buzzer<'static>) {
 
 
 esp_bootloader_esp_idf::esp_app_desc!();
+
+static mut APP_CORE_STACK: Stack<8192> = Stack::new();
+
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) {
     // generator version: 0.3.1
@@ -88,7 +92,7 @@ async fn main(spawner: Spawner) {
     // esp_hal_embassy::init([timer0, timer1]);
     esp_hal_embassy::init(timg1.timer0);
     info!("Embassy initialized!");
-
+    
     static SND_CHANNEL: StaticCell<BuzzerChannel> = StaticCell::new();
     let snd_channel = &*SND_CHANNEL.init(Channel::new());
     
@@ -165,7 +169,7 @@ async fn main(spawner: Spawner) {
         let bld = StickDisplayBuilder::new(peripherals.SPI2, sclk, mosi)
             .with_bl(backlight)
             .with_dma(peripherals.DMA_SPI2)
-            .into_async()
+            // .into_async()
             // .into_mutex()
             .create_display(dc, rst, cs);
             // .build_async(dc, rst, cs)
@@ -185,9 +189,22 @@ async fn main(spawner: Spawner) {
     let rng = esp_hal::rng::Rng::new(peripherals.RNG);
     // static WINDOW: StaticCell<CCanvas<Rgb565, 125, 142>> = StaticCell::new();
     // let window = WINDOW.init_with(|| CCanvas::<Rgb565, 125, 142>::new());
-    if let Err(e) = spawner.spawn(display_task(display, rng)) {
-        error!("unable to spawn display_task: {}", e);
-    }
+
+    let mut cpu_control = CpuControl::new(peripherals.CPU_CTRL);
+    let _guard = cpu_control
+        .start_app_core(unsafe { &mut *addr_of_mut!(APP_CORE_STACK) }, move || {
+            static EXECUTOR: StaticCell<Executor> = StaticCell::new();
+            let executor = EXECUTOR.init(Executor::new());
+            executor.run(|spawner| {
+                spawner.spawn(display_task(display, rng)).ok();
+            });
+        })
+        .unwrap();
+
+    // if let Err(e) = spawner.spawn(display_task(display, rng)) {
+    //     error!("unable to spawn display_task: {}", e);
+    // }
+
     if let Err(e) = spawner.spawn(sound_task(buzzer)) {
         error!("unable to spawn sound_task: {}", e);
     }
@@ -223,20 +240,7 @@ async fn main(spawner: Spawner) {
     info!("{}", stats);
     // let mut counter = 0;
     loop {
-        // counter += 1;
-
-        // {
-        //     // let mut display = get_raw_fb(frame_buffer);
-        //     // Fill the display with alternating colors every 8 frames
-        //     display.clear(colors[(counter / 8) % colors.len()]).unwrap();
-        //     // Draw text
-        //     let right = Text::new(text, Point::new(text_x, text_y), text_style)
-        //         .draw(display.deref_mut())
-        //         .unwrap();
-        //     text_x = if right.x <= 0 { WIDTH.into() } else { text_x - 10 };
-        // }
-        //     text_box.draw(&mut display).unwrap();
-        led.toggle();
+        // led.toggle();
 
         match rtc.datetime() {
             Ok(_dt) => {
@@ -250,7 +254,6 @@ async fn main(spawner: Spawner) {
                 }
             },
         }        
-        // a_display.show_raw_data(0, 0, watchy_m5::display::WIDTH, watchy_m5::display::HEIGHT, frame_buffer).await.unwrap();
         // info!("Hello world!");
         Timer::after(Duration::from_millis(1_000)).await;
 
@@ -260,7 +263,8 @@ async fn main(spawner: Spawner) {
 }
 
 
-type StickDrawTarget<'d> = StickDisplayT<'d, StickDisplaySpiDmaBusAsync<'d>>;
+// type StickDrawTarget<'d> = StickDisplayT<'d, StickDisplaySpiDmaBusAsync<'d>>;
+type StickDrawTarget<'d> = StickDisplayT<'d, StickDisplaySpiDmaBusBlocking<'d>>;
 // type StickDrawTarget<'d> = StickDisplay<'d, MySpiInterface<'d>, Output<'d>>;
 // type StickDrawTarget<'d> = CrazyDisplay<'d, StickDisplaySpiDmaBusBlocking<'d>>;
 
@@ -440,7 +444,7 @@ async fn display_task_worker(mut display: StickDrawTarget<'static>, mut esp_rng:
             embedded_graphics::prelude::Transform::translate_mut(&mut hello_box, translation);
             last_hello_tick = Instant::now();
             text_box.draw(&mut sub_window)?;
-            info!("{}", esp_alloc::HEAP.stats());
+            // info!("{}", esp_alloc::HEAP.stats());
         }
 
         Timer::after(Duration::from_millis(50)).await;

@@ -1,17 +1,16 @@
 #![no_std]
 #![no_main]
 #![feature(slice_as_array)]
+#![feature(where_clause_attrs)]
 
-use allocator_api2::vec::Vec;
 use defmt::{error, info, trace};
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Instant, Timer};
-use embedded_canvas::Canvas;
 use embedded_graphics_framebuf::FrameBuf;
 use embedded_hal_bus::i2c::RefCellDevice;
 
 use embedded_layout::{align::{horizontal, vertical, Align}, prelude::Chain, View};
-use embedded_physics::{sprites::{Sprite, SpriteContainer}, vectors::{SpriteVector, VecComp, Velocity}};
+use embedded_physics::sprites::{Sprite, SpriteContainer};
 use esp_alloc::HeapStats;
 use esp_hal::{
     clock::CpuClock, gpio::{Input, InputConfig, Io, Level, Output, OutputConfig}, handler, i2c::master::{BusTimeout, Config as I2cConfig, I2c}, ledc::Ledc, ram, time::Rate, timer::timg::TimerGroup
@@ -22,22 +21,22 @@ use pcf8563::Pcf8563;
 
 use rand::{Rng, SeedableRng};
 use static_cell::StaticCell;
-use watchy_m5::{buttons::{btn_task, initialize_buttons, INPUT_BUTTONS}, display::{DisplayError, SpiBusMutex, StickDisplaySpiDmaBusAsync, StickDisplaySpiDmaBusBlocking, StickDisplayT, StickFrameBuf, StickFrameBuf2}};
-use watchy_m5::display::{StickDisplay, StickDisplayBuilder, HEIGHT, WIDTH};
+use watchy_m5::{buttons::{btn_task, initialize_buttons, INPUT_BUTTONS}, display::{DisplayError, StickDisplaySpiDmaBusAsync, StickDisplayT, StickFrameBuf}};
+use watchy_m5::display::{StickDisplayBuilder, HEIGHT, WIDTH};
 use watchy_m5::buzzer::{Buzzer, BuzzerChannel, BuzzerState};
 use watchy_m5::music::Song;
 use watchy_m5::player::{player_task, PlayerCmd, Player};
 use watchy_m5::pink_panther;
 
-use embassy_sync::{
-    channel::Channel, mutex::Mutex} 
+use embassy_sync::
+    channel::Channel 
 ;
 
 use {esp_backtrace as _, esp_println as _};
 
 use core::cell::RefCell;
 use embedded_graphics::{
-    geometry::AnchorX, mono_font::{ascii::FONT_10X20, MonoTextStyle}, pixelcolor::{raw::LittleEndian, Rgb565}, prelude::*, primitives::{Circle, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle, StrokeAlignment, Triangle}, text::Text
+    geometry::AnchorX, mono_font::{ascii::FONT_10X20, MonoTextStyle}, pixelcolor::Rgb565, prelude::*, primitives::{Circle, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle, StrokeAlignment, Triangle}, text::Text
 };
 
 use embedded_text::{
@@ -334,12 +333,12 @@ async fn display_task_worker(mut display: StickDrawTarget<'static>, mut esp_rng:
     hello_box.align_to_mut(&text_box, horizontal::NoAlignment, vertical::TopToBottom);
 
     let bb_tl = Point::new(0,88);
-    // let mut ball_canvas= Canvas::<Rgb565>::new(Size::new(135, 152)).place_at(bb_tl);
-    // let bounce_box = ball_canvas.bounding_box();
-    let bounce_box = Rectangle::new(bb_tl, Size::new(135, 152));
+    let bb_size = Size::new(135, 152);
+    // let bounce_box = Rectangle::new(bb_tl, bb_size);
+    let bounce_box = Rectangle::new(Point::zero(), bb_size);
 
 
-    let sub_window_r = Rectangle::with_corners(display.bounding_box().top_left, bounce_box.anchor_point(embedded_graphics::geometry::AnchorPoint::TopRight));
+    let sub_window_r = Rectangle::with_corners(display.bounding_box().top_left, bb_tl + Point::new(bb_size.width as i32, 0));
     info!("bounce_box: {:?}", bounce_box);
 
     let circle = Circle::with_center(bounce_box.bounding_box().center(), 15);
@@ -356,7 +355,7 @@ async fn display_task_worker(mut display: StickDrawTarget<'static>, mut esp_rng:
 
     ball.set_direction_from_angle(Angle::from_degrees(fun_rng.random_range(0..360) as f32));
     ball2.set_direction_from_angle(Angle::from_degrees(fun_rng.random_range(0..360) as f32));
-    let mut sprite_container = SpriteContainer::new(bounce_box);
+    let mut sprite_container = SpriteContainer::<Rgb565, 10>::new(bounce_box);
     let _ = sprite_container.add_sprite(ball);
     let _ = sprite_container.add_sprite(ball2);
     // let stationary_shape = Rectangle::with_center(bounce_box.bounding_box().center(), Size::new_equal(25));
@@ -388,31 +387,32 @@ async fn display_task_worker(mut display: StickDrawTarget<'static>, mut esp_rng:
     let mut last_hello_tick = Instant::now();
     let mut last_bounce_tick = Instant::now();
     let mut bb_style: PrimitiveStyle<Rgb565> = ball_bound_sb.build();
-    let mut fb_data = StickFrameBuf2::create_vec( bounce_box.size.width as usize, bounce_box.size.height as usize);
-    let fun = StickFrameBuf2::new(fb_data.as_mut_slice());
-    let mut fb = FrameBuf::new(fun, bounce_box.size.width as usize, bounce_box.size.height as usize);
-    // let mut fb = FrameBuf::new_with_origin(fun, bounce_box.size.width as usize, bounce_box.size.height as usize, Point::zero());
+    let bb_width = bb_size.width as usize;
+    let bb_height = bb_size.height as usize;
+    let mut fb_data = StickFrameBuf::create_vec( bb_width, bb_height);
+    let fun = StickFrameBuf::new(fb_data.as_mut_slice());
+    // let mut fb = FrameBuf::new_with_origin(fun, bb_width, bb_height, bb_tl);
+    let mut fb = FrameBuf::new(fun, bb_width, bb_height);
     loop {
         
         let bg_color = colors[(counter / 8) % colors.len()];
         if last_bounce_tick.elapsed() >= Duration::from_millis(50) {
-            let window_r = bounce_box;
+            // let window_r = bounce_box;
             
             let now = Instant::now();
             last_bounce_tick = now;
             sprite_container.update_positions();
             {
-                let mut fb = fb.translated(-bounce_box.top_left);
+                // fb.clear(bg_color)?;
                 let bounce_box = bounce_box.into_styled(bb_style);
                 bounce_box.draw(&mut fb)?;    
+                // sprite_container.set_bg_color(Some(bg_color));
                 sprite_container.draw(&mut fb)?;
             }
             
-            let r = Rectangle::new(window_r.top_left, fb.size());
-            let blah = fb.data.0.iter();
-            if let Err(e) = display.fill_contiguous(&r, blah.copied()) {
-                error!("problem: {}", e);
-            }
+            let fb_iter = fb.data.0.iter().copied();
+            let r = Rectangle::new(bb_tl, fb.size());
+            display.fill_contiguous(&r, fb_iter)?;
             {
                 let elapsed = now.elapsed();
                 if elapsed.as_ticks() > 300 { info!("update_position plus draw took {}", elapsed); }
@@ -440,6 +440,7 @@ async fn display_task_worker(mut display: StickDrawTarget<'static>, mut esp_rng:
             embedded_graphics::prelude::Transform::translate_mut(&mut hello_box, translation);
             last_hello_tick = Instant::now();
             text_box.draw(&mut sub_window)?;
+            info!("{}", esp_alloc::HEAP.stats());
         }
 
         Timer::after(Duration::from_millis(50)).await;

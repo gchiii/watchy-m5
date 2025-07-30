@@ -39,12 +39,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arrayvec"
-version = "0.7.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c02d123df017efcdfbd739ef81735b36c5ba83ec3c59c80a9d7ecc718f92e50"
-
-[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -371,18 +365,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "downcast-rs"
-version = "2.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ea8a8b81cacc08888170eef4d13b775126db426d0b348bee9d18c2c1eaf123cf"
-
-[[package]]
-name = "either"
-version = "1.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
-
-[[package]]
 name = "embassy-embedded-hal"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -699,6 +681,7 @@ version = "0.1.0"
 dependencies = [
  "defmt 1.0.1",
  "embedded-graphics",
+ "embedded-graphics-framebuf",
  "heapless",
  "micromath",
  "num-traits",
@@ -1351,7 +1334,6 @@ dependencies = [
 [[package]]
 name = "lcd-async"
 version = "0.1.1"
-source = "git+https://github.com/okhsunrog/lcd-async?rev=6493bf9855df4961ef931eab0531a5472ce0e4a6#6493bf9855df4961ef931eab0531a5472ce0e4a6"
 dependencies = [
  "embedded-graphics",
  "embedded-graphics-core",
@@ -1617,35 +1599,6 @@ name = "once_cell"
 version = "1.21.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42f5e15c9953c5e4ccceeb2e7382a716482c34515315f7b03532b8b4e8393d2d"
-
-[[package]]
-name = "ordered-float"
-version = "5.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2c1f9f56e534ac6a9b8a4600bdf0f530fb393b5f393e7b4d03489c3cf0c3f01"
-dependencies = [
- "num-traits",
-]
-
-[[package]]
-name = "parry2d"
-version = "0.21.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fcc75102c1fac2294401262c78e5a42abe7168244c9436df2fec8fe0c27395c7"
-dependencies = [
- "approx",
- "arrayvec",
- "bitflags 2.9.1",
- "downcast-rs",
- "either",
- "log",
- "nalgebra 0.33.2",
- "num-derive",
- "num-traits",
- "ordered-float",
- "simba 0.9.0",
- "thiserror",
-]
 
 [[package]]
 name = "paste"
@@ -2277,7 +2230,6 @@ dependencies = [
  "nalgebra 0.33.2",
  "no-std-compat2",
  "num-traits",
- "parry2d",
  "pcf8563",
  "portable-atomic-util",
  "rand",

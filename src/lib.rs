@@ -1,4 +1,5 @@
 #![no_std]
+#![feature(where_clause_attrs)]
 pub mod music;
 pub mod pink_panther;
 pub mod tones;

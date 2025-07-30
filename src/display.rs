@@ -1,14 +1,9 @@
-
-use core::alloc::Layout;
 use core::convert::Infallible;
-use core::fmt::{Arguments, Debug};
+use core::fmt::Debug;
 use core::ops::DerefMut;
-use core::ptr::slice_from_raw_parts_mut;
 
-use allocator_api2::alloc::alloc_zeroed;
 use allocator_api2::vec::Vec;
 use defmt::{error, info};
-use embedded_graphics::primitives::Rectangle;
 use embedded_graphics::{
     draw_target::DrawTarget, 
     pixelcolor::Rgb565, 
@@ -17,6 +12,7 @@ use embedded_graphics::{
 
 use embedded_graphics_framebuf::backends::FrameBufferBackend;
 use embedded_graphics_framebuf::FrameBuf;
+
 use embedded_hal_bus::spi::{DeviceError, ExclusiveDevice};
 #[cfg(feature = "mipidsi")] 
 use esp_hal::delay::Delay;
@@ -37,17 +33,10 @@ use embassy_time::Delay;
 #[cfg(feature = "lcdasync")] 
 use lcd_async::{interface::{self, Interface, SpiError, SpiInterface}, models::ST7789, options::{ColorInversion, Orientation, Rotation}, Builder, Display};
 
-use parry2d::either::Either::Right;
 use static_cell::StaticCell;
 
 use {esp_backtrace as _, esp_println as _};
 
-// use embedded_graphics::{
-//     mono_font::{ascii::FONT_10X20, MonoTextStyle},
-//     pixelcolor::Rgb565,
-//     prelude::*,
-//     text::Text,
-// };
 use thiserror_no_std::Error;
 
 
@@ -85,20 +74,33 @@ const FRAME_BUFFER_SIZE: usize = WIDTH * HEIGHT * 2;
 // Use StaticCell to create a static, zero-initialized buffer.
 static FRAME_BUFFER: StaticCell<Vec<Rgb565, esp_alloc::InternalMemory>> = StaticCell::new();
 
-const BUFLEN: usize = 4096;
+const PIXEL_ROW_LEN: usize = WIDTH;
+
+// const BUFLEN: usize = 4096;
+const BUFLEN: usize = 20 * WIDTH * size_of::<Rgb565>();
 const DMA_BUFLEN: usize = 16_000;
 // static DISPLAY_BUF: StaticCell<[u8; BUFLEN]> = StaticCell::new();
 static DISPLAY_BUF: StaticCell<Vec<u8, esp_alloc::InternalMemory>> = StaticCell::new();
 
+#[cfg(all(feature = "lcdasync", feature = "mipidsi"))]
+compile_error!("feature \"lcdasyncoo\" and feature \"mipidsi\" cannot be enabled at the same time");
+#[cfg(not(any(feature = "lcdasync", feature = "mipidsi")))]
+compile_error!("must have either feature \"lcdasyncoo\" or feature \"mipidsi\" defined");
+
 pub type SpiDmaBusAsync = esp_hal::spi::master::SpiDmaBus<'static, esp_hal::Async>;
 pub type StickDisplaySpiDmaBusAsync<'d> = esp_hal::spi::master::SpiDmaBus<'d, esp_hal::Async>;
 pub type StickDisplaySpiDmaBusBlocking<'d> = esp_hal::spi::master::SpiDmaBus<'d, esp_hal::Blocking>;
-#[cfg(feature = "lcdasync")] 
+#[cfg(feature = "lcdasync")]
 pub type EmbassyAsyncSpiDev<'d> = embassy_embedded_hal::shared_bus::asynch::spi::SpiDevice<'d, NoopRawMutex, SpiDmaBusAsync, Output<'d>>;
-// pub type MySpiInterface<'d> = SpiInterface<EmbassyAsyncSpiDev<'d>, Output<'d>>;
+#[cfg(feature = "lcdasync")]
+pub type AsyncSpiInterface<'d> = SpiInterface<EmbassyAsyncSpiDev<'d>, Output<'d>>;
 
 
 pub type StickDisplayExclusiveDevice<'d, SBus>  = embedded_hal_bus::spi::ExclusiveDevice<SBus, Output<'d>, Delay>;
+
+#[cfg(feature = "lcdasync")] 
+pub type StickDisplaySpiInterface<'d, SBus> = SpiInterface<StickDisplayExclusiveDevice<'d, SBus>, Output<'d>>;
+#[cfg(feature = "mipidsi")]
 pub type StickDisplaySpiInterface<'d, SBus> = SpiInterface<'d, StickDisplayExclusiveDevice<'d, SBus>, Output<'d>>;
 pub type StickDisplayT<'d, SBus> = StickDisplay<'d, StickDisplaySpiInterface<'d, SBus>, Output<'d>>;
 // type StickDrawTarget<'d> = CrazyDisplay<'d, StickDisplaySpiDmaBusAsync<'d>>;
@@ -209,9 +211,12 @@ impl<'d, SBus: embedded_hal::spi::SpiBus> StickDisplayBuilder<'d, SBus> {
     }
 }
 
+#[cfg(feature = "lcdasync")] 
 pub type SpiBusMutex<'d> = Mutex<NoopRawMutex, SpiDmaBus<'d, esp_hal::Async>>;
 
+#[cfg(feature = "lcdasync")] 
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
+#[cfg(feature = "lcdasync")] 
 use embassy_embedded_hal;
 
 #[cfg(feature = "lcdasync")] 
@@ -237,7 +242,7 @@ impl<'d> StickDisplayBuilder<'d, SpiDmaBusAsync>
 #[cfg(feature = "lcdasync")] 
 impl<'d> StickDisplayBuilder<'d, &'static mut SpiBusMutex<'static>> 
 {
-    pub async fn build_async(self, dc: impl OutputPin + 'd, rst: impl OutputPin + 'd, cs: impl OutputPin + 'd) -> StickDisplay<'d, MySpiInterface<'d>, Output<'d>> {
+    pub async fn build_async(self, dc: impl OutputPin + 'd, rst: impl OutputPin + 'd, cs: impl OutputPin + 'd) -> StickDisplay<'d, AsyncSpiInterface<'d>, Output<'d>> {
         // let mut display_delay = esp_hal::delay::Delay::new();
 
         let dc = Output::new(dc, Level::Low, OutputConfig::default());
@@ -275,6 +280,7 @@ impl<'d> StickDisplayBuilder<'d, &'static mut SpiBusMutex<'static>>
 
 }
 
+#[cfg(feature = "mipidsi")]
 impl<'d, SBus> StickDisplayBuilder<'d, SBus> 
 where 
     SBus: embedded_hal::spi::SpiBus,
@@ -338,18 +344,37 @@ where
 }
 
 
+
+// #[cfg(feature = "mipidsi")]
+// pub trait StickDisplayInterface: Interface where Rgb565: InterfacePixelFormat<<DI as Interface>::Word> {}
+
+// #[cfg(feature = "lcdasync")]
+// pub trait StickDisplayInterface: Interface {}
+
 pub struct StickDisplay<'d, DI, OP> 
 where 
     DI: Interface,
     OP: embedded_hal::digital::OutputPin,
-    Rgb565: InterfacePixelFormat<<DI as Interface>::Word>
+    // Rgb565: InterfacePixelFormat<<DI as Interface>::Word>,
 {
     pub d: Display<DI, ST7789, OP>,
     bl: Option<Output<'d>>,
-    // pub fb: FrameBuf<Rgb565, StickFrameBuf>,
+    #[cfg(feature = "lcdasync")]
+    pub fb: FrameBuf<Rgb565, StickFrameBuf<'d>>,
     // fbuf: RawFrameBuf<Rgb565, &'d mut [u8]>,
 }
 
+#[cfg(feature = "lcdasync")]
+impl<'d, DI, OP> DerefMut for StickDisplay<'d, DI, OP>
+where 
+    DI: Interface,
+    OP: embedded_hal::digital::OutputPin,
+{
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.fb
+    }
+}
+#[cfg(feature = "mipidsi")]
 impl<'d, DI, OP> DerefMut for StickDisplay<'d, DI, OP>
 where 
     DI: Interface,
@@ -361,6 +386,20 @@ where
     }
 }
 
+#[cfg(feature = "lcdasync")]
+impl<'d, DI, OP> core::ops::Deref for StickDisplay<'d, DI, OP>
+where 
+    DI: Interface,
+    OP: embedded_hal::digital::OutputPin,
+{
+    type Target = FrameBuf<Rgb565, StickFrameBuf<'d>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.fb
+    }
+}
+
+#[cfg(feature = "mipidsi")]
 impl<'d, DI, OP> core::ops::Deref for StickDisplay<'d, DI, OP>
 where 
     DI: Interface,
@@ -375,24 +414,11 @@ where
 }
 
 
-pub struct StickFrameBuf(pub Vec<Rgb565, esp_alloc::InternalMemory>);
-
-
 #[derive(Debug)]
-pub struct StickFrameBuf2<'a>(pub &'a mut [Rgb565]);
+pub struct StickFrameBuf<'a>(pub &'a mut [Rgb565]);
 
-// impl<'a> IntoIterator for StickFrameBuf2<'a> {
-//     type Item = Rgb565;
 
-//     type IntoIter = core::slice::Iter<'a, Rgb565>;
-
-//     fn into_iter(self) -> Self::IntoIter {
-//         let monkey = self.0.iter().into()
-//         let blah: core::slice::Iter<'_, Rgb565> = self.0.iter();
-//     }
-// }
-
-impl<'a> FrameBufferBackend for StickFrameBuf2<'a> {
+impl<'a> FrameBufferBackend for StickFrameBuf<'a> {
     type Color = Rgb565;
 
 
@@ -409,9 +435,9 @@ impl<'a> FrameBufferBackend for StickFrameBuf2<'a> {
     }
 }
 
-impl<'a> StickFrameBuf2<'a> {
-    pub fn new(rgb565s: &'a mut [Rgb565]) -> Self {
-        Self(rgb565s)
+impl<'a> StickFrameBuf<'a> {
+    pub fn new(buf: &'a mut [Rgb565]) -> Self {
+        Self(buf)
     }
     pub fn create_vec(width: usize, height: usize) -> Vec<Rgb565, esp_alloc::InternalMemory> {
         let mut buf = Vec::<Rgb565, esp_alloc::InternalMemory>::with_capacity_in(width * height, esp_alloc::InternalMemory);
@@ -420,63 +446,8 @@ impl<'a> StickFrameBuf2<'a> {
     }
 }
 
-impl IntoIterator for StickFrameBuf {
-    type Item = Rgb565;
 
-    type IntoIter = allocator_api2::vec::IntoIter<Rgb565, esp_alloc::InternalMemory>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.0.into_iter()
-    }
-}
-
-
-impl StickFrameBuf {
-
-    pub fn new(width: usize, height: usize) -> Self {
-        let mut buf = Vec::<Rgb565, esp_alloc::InternalMemory>::with_capacity_in(width * height, esp_alloc::InternalMemory);
-        buf.resize(width * height, Rgb565::default());        
-        Self(buf)
-    }
-}
-
-impl FrameBufferBackend for StickFrameBuf {
-    type Color = Rgb565;
-
-
-    fn set(&mut self, index: usize, color: Self::Color) {
-        self.0[index] = color
-    }
-
-    fn get(&self, index: usize) -> Self::Color {
-        self.0[index]
-    }
-
-    fn nr_elements(&self) -> usize {
-        self.0.len()
-    }
-}
-
-// pub struct StickFrameBuf(pub &'static mut Vec<Rgb565, esp_alloc::InternalMemory>);
-
-// impl FrameBufferBackend for StickFrameBuf {
-//     type Color = Rgb565;
-
-
-//     fn set(&mut self, index: usize, color: Self::Color) {
-//         self.0[index] = color
-//     }
-
-//     fn get(&self, index: usize) -> Self::Color {
-//         self.0[index]
-//     }
-
-//     fn nr_elements(&self) -> usize {
-//         self.0.len()
-//     }
-// }
-
-
+#[cfg(feature = "mipidsi")]
 impl<'d, DI, OP> StickDisplay<'d, DI, OP>
 where 
     DI: Interface,
@@ -484,18 +455,37 @@ where
     Rgb565: InterfacePixelFormat<<DI as Interface>::Word>
 {
     fn new(d: Display<DI, ST7789, OP>, bl: Option<Output<'d>>) -> Self {
-        // let buffer = FRAME_BUFFER.init_with(|| {
-        //     let mut blah = Vec::<Rgb565, esp_alloc::InternalMemory>::with_capacity_in(FRAME_BUFFER_SIZE/2, esp_alloc::InternalMemory);
-        //     blah.resize(FRAME_BUFFER_SIZE/2, Rgb565::default());
-        //     blah
-        // });
-        // let buffer = StickFrameBuf(buffer);
-        // let fb = FrameBuf::new(buffer, WIDTH, HEIGHT);
         Self { 
             d, 
             bl,
-            // buffer,
-            // fb
+        }
+    }
+}
+
+#[cfg(feature = "lcdasync")]
+impl<'d, DI, OP> StickDisplay<'d, DI, OP>
+where 
+    DI: Interface,
+    OP: embedded_hal::digital::OutputPin,
+{
+    fn new(d: Display<DI, ST7789, OP>, bl: Option<Output<'d>>) -> Self {
+    // let bb_width = bb_size.width as usize;
+    // let bb_height = bb_size.height as usize;
+    // let mut fb_data = StickFrameBuf::create_vec( bb_width, bb_height);
+    // let fun = StickFrameBuf::new(fb_data.as_mut_slice());
+    // let mut fb = FrameBuf::new(fun, bb_width, bb_height);
+
+        let buf = FRAME_BUFFER.init_with(|| {
+            let mut blah = Vec::<Rgb565, esp_alloc::InternalMemory>::with_capacity_in(FRAME_BUFFER_SIZE/2, esp_alloc::InternalMemory);
+            blah.resize(FRAME_BUFFER_SIZE/2, Rgb565::default());
+            blah
+        });
+        let buffer = StickFrameBuf::new(buf.as_mut_slice());
+        let fb = FrameBuf::new(buffer, WIDTH, HEIGHT);
+        Self { 
+            d, 
+            bl,
+            fb
         }
     }
 
@@ -509,11 +499,12 @@ where
     // }
 }
 
+
 impl<'d, DI, OP> StickDisplay<'d, DI, OP>
 where 
     DI: Interface,
     OP: embedded_hal::digital::OutputPin,
-    Rgb565: InterfacePixelFormat<<DI as Interface>::Word>
+    // Rgb565: InterfacePixelFormat<<DI as Interface>::Word>
 {
     pub fn on(&mut self) {
         if let Some(bl) = self.bl.as_mut() {
@@ -529,6 +520,7 @@ where
 
 }
 
+#[cfg(feature = "mipidsi")]
 impl<DI, OP> Dimensions for StickDisplay<'_, DI, OP> 
 where 
     DI: Interface,
@@ -540,6 +532,18 @@ where
     }
 }
 
+#[cfg(feature = "lcdasync")]
+impl<DI, OP> Dimensions for StickDisplay<'_, DI, OP> 
+where 
+    DI: Interface,
+    OP: embedded_hal::digital::OutputPin,
+{
+    fn bounding_box(&self) -> embedded_graphics::primitives::Rectangle {
+        self.fb.bounding_box()
+    }
+}
+
+#[cfg(feature = "mipidsi")]
 impl<DI, OP> DrawTarget for StickDisplay<'_, DI, OP> 
 where 
     DI: Interface<Error = SpiError<DeviceError<esp_hal::spi::Error, Infallible>, Infallible>>,
@@ -548,7 +552,6 @@ where
 {
     type Color = Rgb565;
     type Error = DisplayError;
-    // type Error = SpiError<embedded_hal_bus::spi::DeviceError<esp_hal::spi::Error, core::convert::Infallible>, core::convert::Infallible>;
 
     fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
     where
@@ -568,6 +571,26 @@ where
                     },
                     SpiError::Dc(e) => return Err(DisplayError::Infallible(e)),
                 }
+            }
+            Ok(())
+    }
+}
+
+#[cfg(feature = "lcdasync")]
+impl<DI, OP> DrawTarget for StickDisplay<'_, DI, OP> 
+where 
+    DI: Interface<Error = SpiError<DeviceError<esp_hal::spi::Error, Infallible>, Infallible>>,
+    OP: embedded_hal::digital::OutputPin,
+{
+    type Color = Rgb565;
+    type Error = DisplayError;
+    // type Error = SpiError<embedded_hal_bus::spi::DeviceError<esp_hal::spi::Error, core::convert::Infallible>, core::convert::Infallible>;
+
+    fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
+    where
+        I: IntoIterator<Item = embedded_graphics::Pixel<Self::Color>> {
+            if let Err(e) = self.fb.draw_iter(pixels) {
+                return Err(DisplayError::Infallible(e));
             }
             Ok(())
     }

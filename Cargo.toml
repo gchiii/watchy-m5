@@ -100,13 +100,15 @@ micromath = { version = "2.1.0", features = ["num-traits", "vector", "quaternion
 nalgebra = { version = "0.33.2", default-features = false, features = ["macros"]}
 embedded-canvas = { version = "0.3.1", default-features = false, features = ["alloc"]}
 esp-bootloader-esp-idf = { version = "0.1.0", features = ["defmt"] }
-parry2d = { version = "0.21.1", features = ["required-features"], default-features = false }
+# parry2d = { version = "0.21.1", features = ["required-features"], default-features = false }
 num-traits = { version = "0.2.19", default-features = false, features = ["libm"] }
 embedded-physics = {version = "*", path = "../embedded-physics" }
 # geo = "0.30.0"
 # esp-display-interface-spi-dma = { version = "0.2.0", features = ["esp32"] }
-lcd-async = { git = "https://github.com/okhsunrog/lcd-async", rev = "6493bf9855df4961ef931eab0531a5472ce0e4a6"}
+# lcd-async = { git = "https://github.com/okhsunrog/lcd-async", rev = "6493bf9855df4961ef931eab0531a5472ce0e4a6"}
 embedded-graphics-framebuf = "0.5.0"
+lcd-async = "0.1.1"
+# esp-display-interface-spi-dma = { version = "0.2.0", features = ["esp32"], path = "../esp-display-interface-spi-dma"}
 
 
 
@@ -116,7 +118,8 @@ esp-wifi = { git = "https://github.com/esp-rs/esp-hal", rev = "e05d588f726c39852
 esp-alloc = { git = "https://github.com/esp-rs/esp-hal", rev = "e05d588f726c3985266f6a7d2e732120be6c9ccf" }
 pcf8563 = { git = "https://github.com/hyx0329/pcf8563-rs", rev = "0c78da51d5fb429fd3c447103432a7de66cf1bed" }
 mpu6886 = { git = "https://github.com/hyx0329/mpu6886-rs", rev = "0a3f8860f9e0ad5b0b6e2d600edb67de20a91fa6" }
-
+lcd-async = { path = "../lcd-async"}
+# esp-display-interface-spi-dma = { path = "../esp-display-interface-spi-dma"}
 
 [profile.dev]
 # Rust debug is too slow.

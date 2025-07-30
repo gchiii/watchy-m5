@@ -24,20 +24,20 @@ embassy-net = { version = "0.7.0", features = [
 embedded-io = "0.6.1"
 embedded-io-async = "0.6.1"
 esp-alloc = { version = "0.8.0", features = ["internal-heap-stats", "defmt"] }
-esp-backtrace = { version = "0.16.0", features = [
+esp-backtrace = { version = "0.17.0", features = [
   "esp32",
   "defmt",
   "exception-handler",
   "panic-handler",
 ] }
-esp-hal = { version = "1.0.0-beta.1", features = [
+esp-hal = { version = "1.0.0-rc.0", features = [
   "defmt",
   "esp32",
   "unstable",
   "psram",
   "__esp_hal_embassy"
 ] }
-esp-println = { version = "0.14.0", features = ["defmt-espflash", "esp32", "critical-section"] }
+esp-println = { version = "0.15.0", features = ["defmt-espflash", "esp32", "critical-section"] }
 smoltcp = { version = "0.12.0", default-features = false, features = [
   "medium-ethernet",
   "multicast",
@@ -66,8 +66,8 @@ embassy-sync = { version = "0.7.0", features = ["defmt"] }
 embassy-futures = { version = "0.1.1", features = ["defmt"] }
 embassy-embedded-hal = { version = "0.3.0" }
 embassy-time = { version = "0.4.0", features = ["generic-queue-8", "defmt-timestamp-uptime"] }
-esp-hal-embassy = { version = "0.8.0", features = ["esp32", "executors", "defmt"] }
-esp-wifi = { version = "0.14.0", features = [
+esp-hal-embassy = { version = "0.9.0", features = ["esp32", "executors", "defmt"] }
+esp-wifi = { version = "0.15.0", features = [
   "ble",
   "builtin-scheduler",
   "coex",
@@ -88,34 +88,30 @@ mpu6886 = "0.1.0"
 allocator-api2 = { version = "0.3", default-features = false, features = ["alloc"] }
 thiserror-no-std = "2.0.2"
 no-std-compat2 = "0.4.5"
-esp-hal-procmacros = { version = "0.18.0", features = ["embassy"] }
+esp-hal-procmacros = { version = "0.19.0", features = ["embassy"] }
 portable-atomic-util = { version = "0.2.4", features = ["alloc"] }
 embedded-hal-async = "1.0.0"
 embedded-hal = "1.0"
 embedded-text = "0.7.2"
 embedded-layout = "0.4.2"
-rand = { version = "0.9.1", default-features = false, features = ["small_rng"]}
+rand = { version = "0.9.2", default-features = false, features = ["small_rng"]}
 micromath = { version = "2.1.0", features = ["num-traits", "vector", "quaternion"] }
-# nalgebra = { version = "0.30.1", default-features = false, features = ["macros"]}
 nalgebra = { version = "0.33.2", default-features = false, features = ["macros"]}
 embedded-canvas = { version = "0.3.1", default-features = false, features = ["alloc"]}
 esp-bootloader-esp-idf = { version = "0.1.0", features = ["defmt"] }
-# parry2d = { version = "0.21.1", features = ["required-features"], default-features = false }
 num-traits = { version = "0.2.19", default-features = false, features = ["libm"] }
 embedded-physics = {version = "*", path = "../embedded-physics" }
-# geo = "0.30.0"
-# esp-display-interface-spi-dma = { version = "0.2.0", features = ["esp32"] }
-# lcd-async = { git = "https://github.com/okhsunrog/lcd-async", rev = "6493bf9855df4961ef931eab0531a5472ce0e4a6"}
 embedded-graphics-framebuf = "0.5.0"
 lcd-async = "0.1.1"
+esp-rom-sys = { version = "0.1.1", default-features = false, features = ["defmt", "esp32"] }
 # esp-display-interface-spi-dma = { version = "0.2.0", features = ["esp32"], path = "../esp-display-interface-spi-dma"}
 
 
 
 [patch.crates-io]
-esp-hal = { git = "https://github.com/esp-rs/esp-hal", rev = "e05d588f726c3985266f6a7d2e732120be6c9ccf" } 
-esp-wifi = { git = "https://github.com/esp-rs/esp-hal", rev = "e05d588f726c3985266f6a7d2e732120be6c9ccf" } 
-esp-alloc = { git = "https://github.com/esp-rs/esp-hal", rev = "e05d588f726c3985266f6a7d2e732120be6c9ccf" }
+# esp-hal = { git = "https://github.com/esp-rs/esp-hal", rev = "e05d588f726c3985266f6a7d2e732120be6c9ccf" } 
+# esp-wifi = { git = "https://github.com/esp-rs/esp-hal", rev = "e05d588f726c3985266f6a7d2e732120be6c9ccf" } 
+# esp-alloc = { git = "https://github.com/esp-rs/esp-hal", rev = "e05d588f726c3985266f6a7d2e732120be6c9ccf" }
 pcf8563 = { git = "https://github.com/hyx0329/pcf8563-rs", rev = "0c78da51d5fb429fd3c447103432a7de66cf1bed" }
 mpu6886 = { git = "https://github.com/hyx0329/mpu6886-rs", rev = "0a3f8860f9e0ad5b0b6e2d600edb67de20a91fa6" }
 lcd-async = { path = "../lcd-async"}

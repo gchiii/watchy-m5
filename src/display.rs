@@ -355,7 +355,7 @@ pub struct StickDisplay<'d, DI, OP>
 where 
     DI: Interface,
     OP: embedded_hal::digital::OutputPin,
-    // Rgb565: InterfacePixelFormat<<DI as Interface>::Word>,
+    Rgb565: InterfacePixelFormat<<DI as Interface>::Word>,
 {
     pub d: Display<DI, ST7789, OP>,
     bl: Option<Output<'d>>,
@@ -504,7 +504,7 @@ impl<'d, DI, OP> StickDisplay<'d, DI, OP>
 where 
     DI: Interface,
     OP: embedded_hal::digital::OutputPin,
-    // Rgb565: InterfacePixelFormat<<DI as Interface>::Word>
+    Rgb565: InterfacePixelFormat<<DI as Interface>::Word>
 {
     pub fn on(&mut self) {
         if let Some(bl) = self.bl.as_mut() {

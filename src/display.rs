@@ -111,7 +111,7 @@ const FRAME_BUFFER_SIZE: usize = WIDTH * HEIGHT * 2;
 // Use StaticCell to create a static, zero-initialized buffer.
 static FRAME_BUFFER: StaticCell<Vec<Rgb565, esp_alloc::InternalMemory>> = StaticCell::new();
 
-const PIXEL_ROW_LEN: usize = WIDTH;
+// const PIXEL_ROW_LEN: usize = WIDTH;
 
 // const BUFLEN: usize = 4096;
 const BUFLEN: usize = 20 * WIDTH * size_of::<Rgb565>();
@@ -125,10 +125,10 @@ compile_error!("feature \"lcdasyncoo\" and feature \"mipidsi\" cannot be enabled
 compile_error!("must have either feature \"lcdasyncoo\" or feature \"mipidsi\" defined");
 
 
-type EspSpiBusBlock<'d> = esp_hal::spi::master::Spi<'d, esp_hal::Blocking>;
-type EspSpiDmaBusBlock<'d> = esp_hal::spi::master::SpiDmaBus<'d, esp_hal::Blocking>;
-type EspSpiBusAsync<'d> = esp_hal::spi::master::Spi<'d, esp_hal::Async>;
-type EspSpiDmaBusAsync<'d> = esp_hal::spi::master::SpiDmaBus<'d, esp_hal::Async>;
+pub type EspSpiBusBlock<'d> = esp_hal::spi::master::Spi<'d, esp_hal::Blocking>;
+pub type EspSpiDmaBusBlock<'d> = esp_hal::spi::master::SpiDmaBus<'d, esp_hal::Blocking>;
+pub type EspSpiBusAsync<'d> = esp_hal::spi::master::Spi<'d, esp_hal::Async>;
+pub type EspSpiDmaBusAsync<'d> = esp_hal::spi::master::SpiDmaBus<'d, esp_hal::Async>;
 type ExclSpiDev<'d, SBus> = ExclusiveDevice<SBus, Output<'d>, Delay>;
 
 pub type SpiDmaBusAsync = esp_hal::spi::master::SpiDmaBus<'static, esp_hal::Async>;
@@ -616,19 +616,19 @@ impl<'d, SBus: embedded_hal::spi::SpiBus> DisplayBuilder<'d, ExclSpiDev<'d, SBus
     }
 }
 
-fn create_exclusive<SBus>(spi: SBus, cs: esp_hal::gpio::Output<'_>) -> Result<ExclusiveDevice<SBus, esp_hal::gpio::Output<'_>, Delay>, DisplayError> {
-    let display_delay = Delay::new();
+// fn create_exclusive<SBus>(spi: SBus, cs: esp_hal::gpio::Output<'_>) -> Result<ExclusiveDevice<SBus, esp_hal::gpio::Output<'_>, Delay>, DisplayError> {
+//     let display_delay = Delay::new();
 
-    let exclusive_spidev = match ExclusiveDevice::new(spi, cs, display_delay) {
-        Ok(d) => d,
-        Err(_e) => {
-            error!("unable to make exclusive device");
-            return Err(DisplayError::OtherError);
-            // panic!("oops");
-        },
-    };
-    Ok(exclusive_spidev)
-}
+//     let exclusive_spidev = match ExclusiveDevice::new(spi, cs, display_delay) {
+//         Ok(d) => d,
+//         Err(_e) => {
+//             error!("unable to make exclusive device");
+//             return Err(DisplayError::OtherError);
+//             // panic!("oops");
+//         },
+//     };
+//     Ok(exclusive_spidev)
+// }
 
 fn create_dma_buffers() -> Result<(DmaRxBuf, DmaTxBuf), DisplayError> {
     // DMA transfers need descriptors and buffers

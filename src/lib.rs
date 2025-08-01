@@ -1,3 +1,4 @@
+#![feature(slice_as_array)]
 #![no_std]
 #![feature(where_clause_attrs)]
 pub mod music;

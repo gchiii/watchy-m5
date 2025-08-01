@@ -22,8 +22,8 @@ use pcf8563::Pcf8563;
 
 use rand::{Rng, SeedableRng};
 use static_cell::StaticCell;
-use watchy_m5::{buttons::{btn_task, initialize_buttons, INPUT_BUTTONS}, display::{DisplayError, StickDisplaySpiDmaBusAsync, StickDisplaySpiDmaBusBlocking, StickDisplayT, StickFrameBuf}};
-use watchy_m5::display::{StickDisplayBuilder, HEIGHT, WIDTH};
+use watchy_m5::{buttons::{btn_task, initialize_buttons, INPUT_BUTTONS}, display::{DisplayError, DisplayBuilder, DisplayComponents, StickDisplayT, StickFrameBuf}};
+use watchy_m5::display::{HEIGHT, WIDTH};
 use watchy_m5::buzzer::{Buzzer, BuzzerChannel, BuzzerState};
 use watchy_m5::music::Song;
 use watchy_m5::player::{player_task, PlayerCmd, Player};
@@ -111,7 +111,7 @@ async fn main(spawner: Spawner) {
 
     // Set GPIO19 as an output, and set its state low initially.
     let mut led = Output::new(peripherals.GPIO19, Level::Low, OutputConfig::default());
-
+    led.set_low();
     // Get the peripherals for the buzzer
     let buzzer_pin = peripherals.GPIO2;
     let ledc = Ledc::new(peripherals.LEDC);
@@ -158,27 +158,19 @@ async fn main(spawner: Spawner) {
     let button_c = Input::new(peripherals.GPIO35, InputConfig::default());
 
     // lets try to get the interface for the display
-    let mut display = {
+    let display_components = {
         let backlight = peripherals.GPIO27;
         let sclk = peripherals.GPIO13;
         let mosi = peripherals.GPIO15;
         let dc = peripherals.GPIO14;
         let rst = peripherals.GPIO12;
         let cs = peripherals.GPIO5;
-
-        let bld = StickDisplayBuilder::new(peripherals.SPI2, sclk, mosi)
+        DisplayComponents::new(dc, rst, cs)
             .with_bl(backlight)
-            .with_dma(peripherals.DMA_SPI2)
-            // .into_async()
-            // .into_mutex()
-            .create_display(dc, rst, cs);
-            // .build_async(dc, rst, cs)
-            // .await;
-        bld
+            .with_dma(peripherals.DMA_SPI2.into())
+            .with_spi(peripherals.SPI2.into(), mosi, sclk)
+            .expect("msg")
     };
-
-    display.on();
-
     
     let snd_tx = snd_channel.dyn_sender();
     let snd_rx = snd_channel.dyn_receiver();
@@ -196,12 +188,12 @@ async fn main(spawner: Spawner) {
             static EXECUTOR: StaticCell<Executor> = StaticCell::new();
             let executor = EXECUTOR.init(Executor::new());
             executor.run(|spawner| {
-                spawner.spawn(display_task(display, rng)).ok();
+                spawner.spawn(display_task(display_components, rng)).ok();
             });
         })
         .unwrap();
 
-    // if let Err(e) = spawner.spawn(display_task(display, rng)) {
+    // if let Err(e) = spawner.spawn(display_task(display_components, rng)) {
     //     error!("unable to spawn display_task: {}", e);
     // }
 
@@ -264,12 +256,18 @@ async fn main(spawner: Spawner) {
 
 
 // type StickDrawTarget<'d> = StickDisplayT<'d, StickDisplaySpiDmaBusAsync<'d>>;
-type StickDrawTarget<'d> = StickDisplayT<'d, StickDisplaySpiDmaBusBlocking<'d>>;
+// type StickDrawTarget<'d> = StickDisplayT<'d, StickDisplaySpiDmaBusBlocking<'d>>;
 // type StickDrawTarget<'d> = StickDisplay<'d, MySpiInterface<'d>, Output<'d>>;
 // type StickDrawTarget<'d> = CrazyDisplay<'d, StickDisplaySpiDmaBusBlocking<'d>>;
 
 #[embassy_executor::task]
-async fn display_task(display: StickDrawTarget<'static>, esp_rng: esp_hal::rng::Rng) {
+async fn display_task(components: DisplayComponents<'static>, esp_rng: esp_hal::rng::Rng) {
+    let builder = DisplayBuilder::from_components(components);
+    let mut display = builder
+        .to_exclusive_device().expect("msg")
+        .build_mipidsi();
+    display.on();
+
     if let Err(e) = display_task_worker(display, esp_rng).await {
         error!("display error: {}!", e);
         panic!()
@@ -278,7 +276,7 @@ async fn display_task(display: StickDrawTarget<'static>, esp_rng: esp_hal::rng::
 
 // static FB_DATA: StaticCell<Vec<Rgb565, esp_alloc::InternalMemory>> = StaticCell::new();
 
-async fn display_task_worker(mut display: StickDrawTarget<'static>, mut esp_rng: esp_hal::rng::Rng) -> Result<(), DisplayError>{
+async fn display_task_worker<SBus: embedded_hal::spi::SpiBus>(mut display: StickDisplayT<'_, SBus>, mut esp_rng: esp_hal::rng::Rng) -> Result<(), DisplayError>{
 
     // Alternating color
     let colors = [Rgb565::RED, Rgb565::GREEN, Rgb565::BLUE];

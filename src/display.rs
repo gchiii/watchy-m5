@@ -1,9 +1,8 @@
-use core::convert::Infallible;
 use core::fmt::Debug;
-use core::ops::DerefMut;
 
 use allocator_api2::vec::Vec;
-use defmt::{error, info};
+use defmt::error;
+use embedded_graphics::primitives::Rectangle;
 use embedded_graphics::{
     draw_target::DrawTarget, 
     pixelcolor::Rgb565, 
@@ -17,27 +16,38 @@ use embedded_hal_bus::spi::{DeviceError, ExclusiveDevice};
 #[cfg(feature = "mipidsi")] 
 use esp_hal::delay::Delay;
 
-use esp_hal::dma::{DmaChannelFor, DmaError, DmaRxBuf, DmaTxBuf};
+use esp_hal::dma::{DmaBufError, DmaError, DmaRxBuf, DmaTxBuf};
 use esp_hal::dma_buffers;
 use esp_hal::gpio::{Level, Output, OutputConfig, OutputPin};
-use esp_hal::spi::master::{AnySpi, Config, Spi, SpiDmaBus};
+use esp_hal::spi::master::{Config, Spi};
 use esp_hal::spi::Mode;
 use esp_hal::time::Rate;
 
 #[cfg(feature = "mipidsi")] 
-use mipidsi::{interface::{self, Interface, InterfacePixelFormat, SpiError, SpiInterface}, models::ST7789, options::{ColorInversion, Orientation, Rotation}, Builder, Display};
+use mipidsi::{interface::{self, Interface, SpiError, SpiInterface}, models::ST7789, options::{ColorInversion, Orientation, Rotation}, Builder, Display};
 
 
 #[cfg(feature = "lcdasync")] 
 use embassy_time::Delay;
 #[cfg(feature = "lcdasync")] 
 use lcd_async::{interface::{self, Interface, SpiError, SpiInterface}, models::ST7789, options::{ColorInversion, Orientation, Rotation}, Builder, Display};
+#[cfg(feature = "lcdasync")] 
+use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
+#[cfg(feature = "lcdasync")] 
+use embassy_embedded_hal;
 
 use static_cell::StaticCell;
 
 use {esp_backtrace as _, esp_println as _};
 
 use thiserror_no_std::Error;
+
+#[cfg(feature = "lcdasync")] 
+pub type SpiBusMutex<'d> = Mutex<NoopRawMutex, SpiDmaBus<'d, esp_hal::Async>>;
+
+
+#[cfg(feature = "lcdasync")] 
+static SPI_BUS: StaticCell<SpiBusMutex<'static>> = StaticCell::new();
 
 
 #[derive(Debug, Error, defmt::Format)]
@@ -46,11 +56,38 @@ pub enum DisplayError {
     Infallible(#[from] core::convert::Infallible),
     SpiError(#[from] esp_hal::spi::Error),
     DmaError(#[from] DmaError),
-    // Device(#[from] DeviceError<esp_hal::spi::Error, Infallible>),
-    // SomeError(#[from] mipidsi::interface::spi::SpiError<embedded_hal_bus::spi::DeviceError<esp_hal::spi::Error, core::convert::Infallible>, core::convert::Infallible>),
-    // SomeError(#[from] SpiError<embedded_hal_bus::spi::DeviceError<esp_hal::spi::Error, core::convert::Infallible>, core::convert::Infallible>),
-    // InitError(#[from] InitError<SpiError<SpiDeviceError<esp_hal::spi::Error, Infallible>, Infallible>, Infallible>),
+    DmaBufError(#[from] DmaBufError),
+    Digital(#[from] embedded_hal::digital::ErrorKind),
     OtherError,
+}
+
+
+impl From<interface::SpiError<esp_hal::spi::Error, embedded_hal::digital::ErrorKind>> for DisplayError {
+    fn from(value: interface::SpiError<esp_hal::spi::Error, embedded_hal::digital::ErrorKind>) -> Self {
+        
+        match value {
+            SpiError::Spi(e) => e.into(),
+            SpiError::Dc(e) => e.into(),
+        }
+    }
+}
+
+impl From<embedded_hal_bus::spi::DeviceError<esp_hal::spi::Error, core::convert::Infallible>> for DisplayError {
+    fn from(value: embedded_hal_bus::spi::DeviceError<esp_hal::spi::Error, core::convert::Infallible>) -> Self {
+        match value {
+            DeviceError::Spi(e) => e.into(),
+            DeviceError::Cs(e) => e.into(),
+        }
+    }
+}
+
+impl From<interface::SpiError<embedded_hal_bus::spi::DeviceError<esp_hal::spi::Error, core::convert::Infallible>, core::convert::Infallible>> for DisplayError {
+    fn from(value: interface::SpiError<embedded_hal_bus::spi::DeviceError<esp_hal::spi::Error, core::convert::Infallible>, core::convert::Infallible>) -> Self {
+        match value {
+            SpiError::Spi(e) => e.into(),
+            SpiError::Dc(e) => e.into(),
+        }
+    }
 }
 
 
@@ -87,6 +124,13 @@ compile_error!("feature \"lcdasyncoo\" and feature \"mipidsi\" cannot be enabled
 #[cfg(not(any(feature = "lcdasync", feature = "mipidsi")))]
 compile_error!("must have either feature \"lcdasyncoo\" or feature \"mipidsi\" defined");
 
+
+type EspSpiBusBlock<'d> = esp_hal::spi::master::Spi<'d, esp_hal::Blocking>;
+type EspSpiDmaBusBlock<'d> = esp_hal::spi::master::SpiDmaBus<'d, esp_hal::Blocking>;
+type EspSpiBusAsync<'d> = esp_hal::spi::master::Spi<'d, esp_hal::Async>;
+type EspSpiDmaBusAsync<'d> = esp_hal::spi::master::SpiDmaBus<'d, esp_hal::Async>;
+type ExclSpiDev<'d, SBus> = ExclusiveDevice<SBus, Output<'d>, Delay>;
+
 pub type SpiDmaBusAsync = esp_hal::spi::master::SpiDmaBus<'static, esp_hal::Async>;
 pub type StickDisplaySpiDmaBusAsync<'d> = esp_hal::spi::master::SpiDmaBus<'d, esp_hal::Async>;
 pub type StickDisplaySpiDmaBusBlocking<'d> = esp_hal::spi::master::SpiDmaBus<'d, esp_hal::Blocking>;
@@ -106,312 +150,6 @@ pub type StickDisplayT<'d, SBus> = StickDisplay<'d, StickDisplaySpiInterface<'d,
 // type StickDrawTarget<'d> = CrazyDisplay<'d, StickDisplaySpiDmaBusAsync<'d>>;
 
 
-
-#[derive(Debug)]
-pub struct StickDisplayBuilder<'d, SBus> {
-    dc: Option<Output<'d>>,
-    rst: Option<Output<'d>>,
-    cs: Option<Output<'d>>,
-    bl: Option<Output<'d>>,
-    base_spi: SBus,
-}
-
-impl<'d> StickDisplayBuilder<'d, Spi<'d, esp_hal::Blocking>> {
-    pub fn new(spi_periph: impl esp_hal::spi::master::Instance + 'static, sclk: impl OutputPin + 'd, mosi: impl OutputPin + 'd) -> Self {
-        let base_spi = Spi::new(
-            spi_periph, 
-            Config::default()
-                .with_frequency(Rate::from_mhz(40))
-                .with_mode(Mode::_0)
-        ).unwrap()
-            .with_sck(sclk)
-            .with_mosi(mosi);
-
-        Self {
-            dc: None,
-            rst: None,
-            cs: None,
-            bl: None,
-            base_spi,
-        }
-    }
-}
-
-impl<'d> StickDisplayBuilder<'d, Spi<'d, esp_hal::Blocking>> {
-    pub fn into_async(self) -> StickDisplayBuilder<'d, Spi<'d, esp_hal::Async>> {
-        let s = self.base_spi.into_async();
-        StickDisplayBuilder::<'d, Spi<'d, esp_hal::Async>> {
-            base_spi: s,
-            dc: self.dc,
-            rst: self.rst,
-            cs: self.cs,
-            bl: self.bl, 
-        }
-    }
-}
-
-impl<'d> StickDisplayBuilder<'d, StickDisplaySpiDmaBusBlocking<'d>> {
-    pub fn into_async(self) -> StickDisplayBuilder<'d, StickDisplaySpiDmaBusAsync<'d>> {
-        let s = self.base_spi.into_async();
-        StickDisplayBuilder::<'d, StickDisplaySpiDmaBusAsync<'d>> {
-            base_spi: s,
-            dc: self.dc,
-            rst: self.rst,
-            cs: self.cs,
-            bl: self.bl, 
-        }
-    }
-}
-
-impl<'d> StickDisplayBuilder<'d, Spi<'d, esp_hal::Blocking>> {
-    pub fn with_dma(self, dma_channel: impl DmaChannelFor<AnySpi<'d>>) -> StickDisplayBuilder<'d, StickDisplaySpiDmaBusBlocking<'d>>  {
-        // DMA transfers need descriptors and buffers
-        #[allow(clippy::manual_div_ceil)]
-        let (rx_buffer, rx_descriptors, tx_buffer, tx_descriptors) = dma_buffers!(4, DMA_BUFLEN);
-        let dma_rx_buf = match DmaRxBuf::new(rx_descriptors, rx_buffer) {
-            Ok(d) => d,
-            Err(e) => {
-                error!("DmaBufError: {}", e);
-                panic!();
-            },
-        };
-        let dma_tx_buf = match DmaTxBuf::new(tx_descriptors, tx_buffer) {
-            Ok(d) => d,
-            Err(e) => {
-                error!("DmaBufError: {}", e);
-                panic!();
-            },
-        };
-
-        let base_spi = self.base_spi
-            .with_dma(dma_channel)            
-            .with_buffers(dma_rx_buf, dma_tx_buf);
-
-        StickDisplayBuilder::<'d, StickDisplaySpiDmaBusBlocking<'d>> {
-            base_spi,
-            dc: self.dc,
-            rst: self.rst,
-            cs: self.cs,
-            bl: self.bl, 
-        }
-    }
-}
-
-impl<'d, SBus: embedded_hal::spi::SpiBus> StickDisplayBuilder<'d, SBus> {
-
-    pub fn with_bl(self, bl: impl OutputPin + 'd) -> StickDisplayBuilder<'d, SBus> {
-        let bl = Output::new(bl,Level::Low, OutputConfig::default());
-        Self {
-            dc: self.dc,
-            rst: self.rst,
-            cs: self.cs,
-            bl: Some(bl),
-            base_spi: self.base_spi,
-        }
-    }
-}
-
-#[cfg(feature = "lcdasync")] 
-pub type SpiBusMutex<'d> = Mutex<NoopRawMutex, SpiDmaBus<'d, esp_hal::Async>>;
-
-#[cfg(feature = "lcdasync")] 
-use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
-#[cfg(feature = "lcdasync")] 
-use embassy_embedded_hal;
-
-#[cfg(feature = "lcdasync")] 
-static SPI_BUS: StaticCell<SpiBusMutex<'static>> = StaticCell::new();
-
-#[cfg(feature = "lcdasync")] 
-impl<'d> StickDisplayBuilder<'d, SpiDmaBusAsync> 
-{
-    pub fn into_mutex(self) -> StickDisplayBuilder<'d, &'static mut SpiBusMutex<'static>> {
-        let mtx: Mutex<NoopRawMutex, SpiDmaBus<'static, esp_hal::Async>> = Mutex::new(self.base_spi);
-        let spi = SPI_BUS.init(mtx);
-
-        StickDisplayBuilder::<'d, &'static mut SpiBusMutex<'static>> {
-            dc: self.dc,
-            rst: self.rst,
-            cs: self.cs,
-            bl: self.bl,
-            base_spi: spi,
-        }
-    }
-}
-
-#[cfg(feature = "lcdasync")] 
-impl<'d> StickDisplayBuilder<'d, &'static mut SpiBusMutex<'static>> 
-{
-    pub async fn build_async(self, dc: impl OutputPin + 'd, rst: impl OutputPin + 'd, cs: impl OutputPin + 'd) -> StickDisplay<'d, AsyncSpiInterface<'d>, Output<'d>> {
-        // let mut display_delay = esp_hal::delay::Delay::new();
-
-        let dc = Output::new(dc, Level::Low, OutputConfig::default());
-        let cs: Output<'_> = Output::new(cs, Level::High, OutputConfig::default());
-        let rst = Output::new(rst, Level::Low, OutputConfig::default());
-
-        let spi_device = embassy_embedded_hal::shared_bus::asynch::spi::SpiDevice::new(self.base_spi, cs);
-
-        // Create display interface
-        let di = SpiInterface::new(spi_device, dc);
-        let mut delay = embassy_time::Delay;
-
-        // Initialize the display
-        let d = lcd_async::Builder::new(lcd_async::models::ST7789, di)
-            .reset_pin(rst)
-            .display_size(WIDTH as u16, HEIGHT as u16)
-            .orientation(lcd_async::options::Orientation {
-                rotation: lcd_async::options::Rotation::Deg0,
-                mirrored: false,
-            })
-            .display_offset(0, 0)
-            .invert_colors(lcd_async::options::ColorInversion::Inverted)
-            .init(&mut delay)
-            .await;
-        
-        let display: Display<SpiInterface<embassy_embedded_hal::shared_bus::asynch::spi::SpiDevice<'_, NoopRawMutex, SpiDmaBus<'static, esp_hal::Async>, Output<'_>>, Output<'_>>, ST7789, Output<'_>> = match d {
-            Ok(d) => d,
-            Err(_e) => {
-                // error!("{}", e);
-                panic!();
-            },
-        };
-        StickDisplay::new(display, self.bl)
-    }
-
-}
-
-#[cfg(feature = "mipidsi")]
-impl<'d, SBus> StickDisplayBuilder<'d, SBus> 
-where 
-    SBus: embedded_hal::spi::SpiBus,
-    <SBus as embedded_hal::spi::ErrorType>::Error: defmt::Format
-{
-
-    pub fn create_display(self, dc: impl OutputPin + 'd, rst: impl OutputPin + 'd, cs: impl OutputPin + 'd) -> StickDisplay<'d, StickDisplaySpiInterface<'d, SBus>, Output<'d>> {
-        let mut display_delay = esp_hal::delay::Delay::new();
-
-        let dc = Output::new(dc, Level::Low, OutputConfig::default());
-        let cs: Output<'_> = Output::new(cs, Level::High, OutputConfig::default());
-        let rst = Output::new(rst, Level::Low, OutputConfig::default());
-
-        let disp_device = ExclusiveDevice::new(self.base_spi, cs, display_delay).unwrap();
-
-        let disp_buf = DISPLAY_BUF.init_with(|| {
-            let mut blah = Vec::<u8, esp_alloc::InternalMemory>::with_capacity_in(BUFLEN, esp_alloc::InternalMemory);
-            blah.resize(BUFLEN, 0);
-            blah
-        });
-        let b = disp_buf.as_mut_slice();
-        info!("buf_len = {}", b.len());
-        let di = interface::SpiInterface::new(disp_device, dc, b);
-
-        let rotation = Orientation::new().rotate(Rotation::Deg0);
-
-        let d = Builder::new(ST7789, di)
-            .reset_pin(rst)
-            .invert_colors(ColorInversion::Inverted)
-            .display_size(WIDTH as u16, HEIGHT as u16)
-            .display_offset(X_OFFSET, Y_OFFSET)
-            .orientation(rotation)
-            .init(&mut display_delay);            
-
-        
-        let display: mipidsi::Display<interface::SpiInterface<'d, ExclusiveDevice<SBus, Output<'d>, esp_hal::delay::Delay>, Output<'d>>, ST7789, Output<'d>> = match d {
-            Ok(d) => d,
-            Err(e) => {
-                match e {
-                    mipidsi::builder::InitError::Interface(e) => {
-                        match e {
-                            SpiError::Spi(e) => {
-                                match e {
-                                    DeviceError::Spi(_e) => {
-                                        error!("oops: {}", _e);
-                                    },
-                                    DeviceError::Cs(e) => error!("{}", e),
-                                }
-                            },
-                            SpiError::Dc(e) => error!("{}", e),
-                        }
-                    },
-                    mipidsi::builder::InitError::ResetPin(e) => error!("{}", e),
-                };
-                panic!();
-            },
-        };
-        StickDisplay::new(display, self.bl)
-    }
-
-}
-
-
-
-// #[cfg(feature = "mipidsi")]
-// pub trait StickDisplayInterface: Interface where Rgb565: InterfacePixelFormat<<DI as Interface>::Word> {}
-
-// #[cfg(feature = "lcdasync")]
-// pub trait StickDisplayInterface: Interface {}
-
-pub struct StickDisplay<'d, DI, OP> 
-where 
-    DI: Interface,
-    OP: embedded_hal::digital::OutputPin,
-    Rgb565: InterfacePixelFormat<<DI as Interface>::Word>,
-{
-    pub d: Display<DI, ST7789, OP>,
-    bl: Option<Output<'d>>,
-    #[cfg(feature = "lcdasync")]
-    pub fb: FrameBuf<Rgb565, StickFrameBuf<'d>>,
-    // fbuf: RawFrameBuf<Rgb565, &'d mut [u8]>,
-}
-
-#[cfg(feature = "lcdasync")]
-impl<'d, DI, OP> DerefMut for StickDisplay<'d, DI, OP>
-where 
-    DI: Interface,
-    OP: embedded_hal::digital::OutputPin,
-{
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.fb
-    }
-}
-#[cfg(feature = "mipidsi")]
-impl<'d, DI, OP> DerefMut for StickDisplay<'d, DI, OP>
-where 
-    DI: Interface,
-    OP: embedded_hal::digital::OutputPin,
-    Rgb565: InterfacePixelFormat<<DI as Interface>::Word>
-{
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.d
-    }
-}
-
-#[cfg(feature = "lcdasync")]
-impl<'d, DI, OP> core::ops::Deref for StickDisplay<'d, DI, OP>
-where 
-    DI: Interface,
-    OP: embedded_hal::digital::OutputPin,
-{
-    type Target = FrameBuf<Rgb565, StickFrameBuf<'d>>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.fb
-    }
-}
-
-#[cfg(feature = "mipidsi")]
-impl<'d, DI, OP> core::ops::Deref for StickDisplay<'d, DI, OP>
-where 
-    DI: Interface,
-    OP: embedded_hal::digital::OutputPin,
-    Rgb565: InterfacePixelFormat<<DI as Interface>::Word>
-{
-    type Target = Display<DI, ST7789, OP>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.d
-    }
-}
 
 
 #[derive(Debug)]
@@ -446,18 +184,41 @@ impl<'a> StickFrameBuf<'a> {
     }
 }
 
+pub struct StickDisplay<'d, DI, OP> 
+where 
+    DI: Interface<Word = u8>,
+    OP: embedded_hal::digital::OutputPin,
+{
+    pub d: Display<DI, ST7789, OP>,
+    bl: Option<Output<'d>>,
+    #[cfg(feature = "lcdasync")]
+    pub fb: FrameBuf<Rgb565, StickFrameBuf<'d>>,
+    // pub fb: FrameBuf<Rgb565, StickFrameBuf<'d>>,
+    // fbuf: RawFrameBuf<Rgb565, &'d mut [u8]>,
+    buffer: &'static mut Vec<Rgb565, esp_alloc::InternalMemory>,
+    bounding_box: Rectangle,
+}
+
+
 
 #[cfg(feature = "mipidsi")]
 impl<'d, DI, OP> StickDisplay<'d, DI, OP>
 where 
-    DI: Interface,
+    DI: Interface<Word = u8>,
     OP: embedded_hal::digital::OutputPin,
-    Rgb565: InterfacePixelFormat<<DI as Interface>::Word>
 {
     fn new(d: Display<DI, ST7789, OP>, bl: Option<Output<'d>>) -> Self {
+        let buf: &'static mut Vec<Rgb565, esp_alloc::InternalMemory> = FRAME_BUFFER.init_with(|| {
+            let mut blah = Vec::<Rgb565, esp_alloc::InternalMemory>::with_capacity_in(FRAME_BUFFER_SIZE/2, esp_alloc::InternalMemory);
+            blah.resize(FRAME_BUFFER_SIZE/2, Rgb565::default());
+            blah
+        });
+        let bounding_box = d.bounding_box();
         Self { 
             d, 
             bl,
+            buffer: buf,
+            bounding_box,
         }
     }
 }
@@ -465,7 +226,7 @@ where
 #[cfg(feature = "lcdasync")]
 impl<'d, DI, OP> StickDisplay<'d, DI, OP>
 where 
-    DI: Interface,
+    DI: Interface<Word = u8>,
     OP: embedded_hal::digital::OutputPin,
 {
     fn new(d: Display<DI, ST7789, OP>, bl: Option<Output<'d>>) -> Self {
@@ -502,9 +263,9 @@ where
 
 impl<'d, DI, OP> StickDisplay<'d, DI, OP>
 where 
-    DI: Interface,
+    DI: Interface<Word = u8>,
     OP: embedded_hal::digital::OutputPin,
-    Rgb565: InterfacePixelFormat<<DI as Interface>::Word>
+    // Rgb565: InterfacePixelFormat<<DI as Interface>::Word>
 {
     pub fn on(&mut self) {
         if let Some(bl) = self.bl.as_mut() {
@@ -520,35 +281,24 @@ where
 
 }
 
-#[cfg(feature = "mipidsi")]
 impl<DI, OP> Dimensions for StickDisplay<'_, DI, OP> 
 where 
-    DI: Interface,
+    DI: Interface<Word = u8>,
     OP: embedded_hal::digital::OutputPin,
-    Rgb565: InterfacePixelFormat<<DI as Interface>::Word>
 {
     fn bounding_box(&self) -> embedded_graphics::primitives::Rectangle {
-        self.d.bounding_box()
+        self.bounding_box
     }
 }
 
-#[cfg(feature = "lcdasync")]
-impl<DI, OP> Dimensions for StickDisplay<'_, DI, OP> 
-where 
-    DI: Interface,
-    OP: embedded_hal::digital::OutputPin,
-{
-    fn bounding_box(&self) -> embedded_graphics::primitives::Rectangle {
-        self.fb.bounding_box()
-    }
-}
 
 #[cfg(feature = "mipidsi")]
 impl<DI, OP> DrawTarget for StickDisplay<'_, DI, OP> 
 where 
-    DI: Interface<Error = SpiError<DeviceError<esp_hal::spi::Error, Infallible>, Infallible>>,
+    // DI: Interface<Word = u8, Error = SpiError<DeviceError<esp_hal::spi::Error, Infallible>, Infallible>>,
+    DI: Interface<Word = u8>,
+    // DI: Interface<Word = u8, Error = SpiError<esp_hal::spi::Error, embedded_hal::digital::ErrorKind>>,
     OP: embedded_hal::digital::OutputPin,
-    Rgb565: InterfacePixelFormat<<DI as Interface>::Word>
 {
     type Color = Rgb565;
     type Error = DisplayError;
@@ -556,30 +306,25 @@ where
     fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
     where
         I: IntoIterator<Item = embedded_graphics::Pixel<Self::Color>> {
-            if let Err(e) = self.d.draw_iter(pixels) {
-                // return Err(DisplayError::Infallible(e));
-                match e {
-                    SpiError::Spi(e) => {
-                        match e {
-                            DeviceError::Spi(e) => {
-                                error!("draw error! {}", e);
-                                panic!();
-                                return Err(DisplayError::SpiError(e))
-                            },
-                            DeviceError::Cs(e) => return Err(DisplayError::Infallible(e)),
-                        }
-                    },
-                    SpiError::Dc(e) => return Err(DisplayError::Infallible(e)),
-                }
-            }
+            let mut fb = FrameBuf::new(self.buffer.as_mut_array::<{ WIDTH*HEIGHT }>().expect("really bad"), WIDTH, HEIGHT);
+            fb.draw_iter(pixels)?;
+            // if let Err(e) = self.d.draw_iter(pixels) {
+            //     match e {
+            //         SpiError::Spi(e) => {
+            //             return Err(e.into());
+            //         },
+            //         SpiError::Dc(e) => return Err(e.into()),
+            //     }
+            // }
             Ok(())
     }
 }
 
+
 #[cfg(feature = "lcdasync")]
 impl<DI, OP> DrawTarget for StickDisplay<'_, DI, OP> 
 where 
-    DI: Interface<Error = SpiError<DeviceError<esp_hal::spi::Error, Infallible>, Infallible>>,
+    DI: Interface<Word = u8, Error = SpiError<DeviceError<esp_hal::spi::Error, Infallible>, Infallible>>,
     OP: embedded_hal::digital::OutputPin,
 {
     type Color = Rgb565;
@@ -597,4 +342,312 @@ where
 }
 
 
+
+pub struct StickDisplayBuffer {
+    buffer: &'static mut Vec<Rgb565, esp_alloc::InternalMemory>,
+    bounding_box: Rectangle,
+}
+
+impl Dimensions for StickDisplayBuffer {
+    fn bounding_box(&self) -> Rectangle {
+        self.bounding_box
+    }
+}
+
+impl StickDisplayBuffer {
+    pub fn create() -> Self {
+        let buf: &'static mut Vec<Rgb565, esp_alloc::InternalMemory> = FRAME_BUFFER.init_with(|| {
+            let mut blah = Vec::<Rgb565, esp_alloc::InternalMemory>::with_capacity_in(FRAME_BUFFER_SIZE/2, esp_alloc::InternalMemory);
+            blah.resize(FRAME_BUFFER_SIZE/2, Rgb565::default());
+            blah
+        });
+        let bounding_box = Rectangle::new(Point::zero(), Size::new(WIDTH as u32, HEIGHT as u32));
+        Self { 
+            buffer: buf,
+            bounding_box,
+        }
+    }
+
+    pub fn get_framebuffer(&mut self) -> FrameBuf<Rgb565, &mut [Rgb565; 32400]> {
+        FrameBuf::new(self.buffer.as_mut_array::<{ WIDTH*HEIGHT }>().expect("really bad"), WIDTH, HEIGHT)
+    }
+}
+
+
+#[derive(Debug)]
+pub enum EspSpiBlockingBus<'d> {
+    NoDma(EspSpiBusBlock<'d>),
+    Dma(EspSpiDmaBusBlock<'d>),
+    None
+}
+
+impl<'d> EspSpiBlockingBus<'d> {
+    pub fn try_into_no_dma(self) -> Result<EspSpiBusBlock<'d>, Self> {
+        if let Self::NoDma(v) = self {
+            Ok(v)
+        } else {
+            Err(self)
+        }
+    }
+
+    pub fn try_into_dma(self) -> Result<EspSpiDmaBusBlock<'d>, Self> {
+        if let Self::Dma(v) = self {
+            Ok(v)
+        } else {
+            Err(self)
+        }
+    }
+}
+
+impl<'d> From<EspSpiBusBlock<'d>> for EspSpiBlockingBus<'d> {
+    fn from(value: EspSpiBusBlock<'d>) -> Self {
+        EspSpiBlockingBus::NoDma(value)
+    }
+}
+
+impl<'d> From<EspSpiDmaBusBlock<'d>> for EspSpiBlockingBus<'d> {
+    fn from(value: EspSpiDmaBusBlock<'d>) -> Self {
+        EspSpiBlockingBus::Dma(value)
+    }
+}
+
+pub struct DisplayComponents<'d> {
+    // pub spi_periph: esp_hal::spi::master::AnySpi<'static>,
+    pub dc: Output<'d>,
+    pub rst: Output<'d>,
+    pub cs: Option<Output<'d>>,
+    pub bl: Option<Output<'d>>,
+    spi_bus: Option<EspSpiBusBlock<'d>>,
+    dma_channel: Option<esp_hal::dma::AnySpiDmaChannel<'d>>,
+}
+
+impl<'d> DisplayComponents<'d> {
+
+    pub fn with_spi(self, spi_periph: esp_hal::spi::master::AnySpi<'static>, sclk: impl OutputPin + 'd, mosi: impl OutputPin + 'd) -> Result<Self, DisplayError> {
+        let config = Config::default()
+            .with_frequency(Rate::from_mhz(40))
+            .with_mode(Mode::_0);
+
+        let spi_bus = Spi::new(spi_periph, config)?
+            .with_sck(sclk)
+            .with_mosi(mosi);        
+
+        let dma = self.dma_channel;
+        // let spi_bus: EspSpiBlockingBus = match dma {
+        //     Some(dma_channel) => {
+        //         let (dma_rx_buf, dma_tx_buf) = create_dma_buffers()?;
+        //         spi_bus
+        //             .with_dma(dma_channel)            
+        //             .with_buffers(dma_rx_buf, dma_tx_buf)
+        //             .into()
+        //     },
+        //     None => spi_bus.into(),
+        // };
+        Ok(Self {
+            spi_bus: Some(spi_bus),
+            dma_channel: dma,
+            ..self
+        })
+    }
+    
+    pub fn new(dc: impl OutputPin + 'd, rst: impl OutputPin + 'd, cs: impl OutputPin + 'd) -> Self {
+        let dc = Output::new(dc, Level::Low, OutputConfig::default());
+        let cs: Output<'_> = Output::new(cs, Level::High, OutputConfig::default());
+        let rst = Output::new(rst, Level::Low, OutputConfig::default());
+        Self {
+            dc, 
+            rst, 
+            cs: Some(cs),
+            bl: None,
+            spi_bus: None,
+            dma_channel: None,
+        }
+    }
+
+    pub fn with_bl(self, bl: impl OutputPin + 'd) -> Self {
+        let bl = Output::new(bl,Level::Low, OutputConfig::default());
+        Self {
+            bl: Some(bl),
+            ..self
+        }
+    }
+
+    pub fn with_dma(self, dma_channel: esp_hal::dma::AnySpiDmaChannel<'d>) -> Self {
+        Self {
+            dma_channel: Some(dma_channel),
+            ..self
+        }
+    }
+
+}
+
+
+#[derive(Debug, defmt::Format)]
+pub struct DisplayBuilder<'d, SBus> {
+    // pub spi_periph: esp_hal::spi::master::AnySpi<'static>,
+    dc: Output<'d>,
+    rst: Output<'d>,
+    cs: Option<Output<'d>>,
+    bl: Option<Output<'d>>,
+    dma_channel: Option<esp_hal::dma::AnySpiDmaChannel<'d>>,
+    spi_instance: SBus,
+}
+
+impl<'d> DisplayBuilder<'d, EspSpiBusBlock<'d>> {
+    pub fn from_components(components: DisplayComponents<'d>) -> Self {
+        let dc = components.dc;
+        let rst = components.rst;
+        let cs = components.cs;
+        let bl = components.bl;
+        let spi_bus = components.spi_bus.expect("why no spi bus?");
+
+        Self {
+            dc,
+            rst,
+            cs,
+            bl,
+            spi_instance: spi_bus,
+            dma_channel: components.dma_channel,
+        }
+    }
+
+    pub fn try_into_dma(self) -> Result<DisplayBuilder<'d, EspSpiDmaBusBlock<'d>>, DisplayError> {
+        let dc = self.dc;
+        let rst = self.rst;
+        let cs = self.cs;
+        let bl = self.bl;
+        let spi_instance = self.spi_instance;        
+        let dma = self.dma_channel;
+
+        let spi_bus = match dma {
+            Some(dma_channel) => {
+                let (dma_rx_buf, dma_tx_buf) = create_dma_buffers()?;
+                spi_instance
+                    .with_dma(dma_channel)            
+                    .with_buffers(dma_rx_buf, dma_tx_buf)
+            },
+            None => return Err(DisplayError::OtherError),
+        };
+
+        
+        Ok(DisplayBuilder::<'d, EspSpiDmaBusBlock<'d>> {
+            dc,
+            rst,
+            cs,
+            bl,
+            spi_instance: spi_bus,
+            dma_channel: None,
+        })
+    }
+    
+}
+
+impl<'d, SBus> DisplayBuilder<'d, SBus> {
+
+    pub fn with_bl(self, bl: impl OutputPin + 'd) -> Self {
+        let bl = Output::new(bl,Level::Low, OutputConfig::default());
+        Self {
+            bl: Some(bl),
+            ..self
+        }
+    }
+}
+
+impl<'d, SBus> DisplayBuilder<'d, SBus> {
+    pub fn to_exclusive_device(self) -> Result<DisplayBuilder<'d, ExclSpiDev<'d, SBus>>, DisplayError> {
+        let dc = self.dc;
+        let rst = self.rst;
+        let cs = self.cs.unwrap();
+        let bl = self.bl;
+        let spi_instance = self.spi_instance;
+        let display_delay = Delay::new();
+
+        let spi_instance: ExclSpiDev<'d, SBus> = match ExclusiveDevice::new(spi_instance, cs, display_delay) {
+            Ok(d) => d,
+            Err(_e) => {
+                error!("unable to make exclusive device");
+                return Err(DisplayError::OtherError);
+                // panic!("oops");bl
+            },
+        };
+        Ok(
+            DisplayBuilder::<'d, ExclSpiDev<'d, SBus>> {
+                dc,
+                rst,
+                cs: None,
+                bl,
+                spi_instance,
+                dma_channel: None,
+            }
+        )
+    }
+}
+
+impl<'d, SBus: embedded_hal::spi::SpiBus> DisplayBuilder<'d, ExclSpiDev<'d, SBus>> {
+    pub fn build_mipidsi(self) -> StickDisplay<'d, SpiInterface<'d, ExclSpiDev<'d, SBus>, Output<'d>>, Output<'d>> {
+        let dc = self.dc;
+        let rst = self.rst;
+        let bl = self.bl;
+        let spi_device = self.spi_instance;
+
+        let di_buf = create_di_buf();
+        
+        let di = interface::SpiInterface::new(spi_device, dc, di_buf);
+
+        let rotation = Orientation::new().rotate(Rotation::Deg0);
+        let mut display_delay = Delay::new();
+        let d = Builder::new(ST7789, di)
+            .reset_pin(rst)
+            .invert_colors(ColorInversion::Inverted)
+            .display_size(WIDTH as u16, HEIGHT as u16)
+            .display_offset(X_OFFSET, Y_OFFSET)
+            .orientation(rotation)
+            .init(&mut display_delay);            
+
+        let display = match d {
+            Ok(d) => d,
+            Err(_e) => {
+                error!("InitError");
+                panic!();
+            },
+        };
+        StickDisplay::new(display, bl)
+        
+    }
+}
+
+fn create_exclusive<SBus>(spi: SBus, cs: esp_hal::gpio::Output<'_>) -> Result<ExclusiveDevice<SBus, esp_hal::gpio::Output<'_>, Delay>, DisplayError> {
+    let display_delay = Delay::new();
+
+    let exclusive_spidev = match ExclusiveDevice::new(spi, cs, display_delay) {
+        Ok(d) => d,
+        Err(_e) => {
+            error!("unable to make exclusive device");
+            return Err(DisplayError::OtherError);
+            // panic!("oops");
+        },
+    };
+    Ok(exclusive_spidev)
+}
+
+fn create_dma_buffers() -> Result<(DmaRxBuf, DmaTxBuf), DisplayError> {
+    // DMA transfers need descriptors and buffers
+    #[allow(clippy::manual_div_ceil)]
+    let (rx_buffer, rx_descriptors, tx_buffer, tx_descriptors) = dma_buffers!(4, DMA_BUFLEN);
+    let dma_rx_buf = DmaRxBuf::new(rx_descriptors, rx_buffer)?;
+    let dma_tx_buf = DmaTxBuf::new(tx_descriptors, tx_buffer)?;
+    Ok((dma_rx_buf, dma_tx_buf))
+}
+
+fn create_di_buf<'d>() -> &'d mut [u8] {
+    let disp_buf = DISPLAY_BUF.init_with(|| {
+        let mut blah = Vec::<u8, esp_alloc::InternalMemory>::with_capacity_in(BUFLEN, esp_alloc::InternalMemory);
+        blah.resize(BUFLEN, 0);
+        blah
+    });
+    let di_buf = disp_buf.as_mut_slice();
+    #[cfg(feature = "defmt")]
+    defmt::trace!("buf_len = {}", di_buf.len());
+    di_buf
+}
 

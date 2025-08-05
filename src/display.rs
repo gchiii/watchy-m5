@@ -1,7 +1,11 @@
+use core::alloc::Layout;
 use core::fmt::Debug;
+use core::ptr::NonNull;
 
+use allocator_api2::alloc::{alloc_zeroed, handle_alloc_error, Allocator};
+use allocator_api2::boxed::Box;
 use allocator_api2::vec::Vec;
-use defmt::error;
+use defmt::{error, info};
 use embedded_graphics::primitives::Rectangle;
 use embedded_graphics::{
     draw_target::DrawTarget, 
@@ -110,6 +114,14 @@ const FRAME_BUFFER_SIZE: usize = WIDTH * HEIGHT * 2;
 
 // Use StaticCell to create a static, zero-initialized buffer.
 static FRAME_BUFFER: StaticCell<Vec<Rgb565, esp_alloc::InternalMemory>> = StaticCell::new();
+fn frame_buffer_init() -> &'static mut Vec<Rgb565, esp_alloc::InternalMemory> {
+    let buf: &'static mut Vec<Rgb565, esp_alloc::InternalMemory> = FRAME_BUFFER.init_with(|| {
+        let mut fb_vec = Vec::<Rgb565, esp_alloc::InternalMemory>::with_capacity_in(FRAME_BUFFER_SIZE/2, esp_alloc::InternalMemory);
+        fb_vec.resize(FRAME_BUFFER_SIZE/2, Rgb565::default());
+        fb_vec
+    });
+    buf
+}
 
 // const PIXEL_ROW_LEN: usize = WIDTH;
 
@@ -193,9 +205,7 @@ where
     bl: Option<Output<'d>>,
     #[cfg(feature = "lcdasync")]
     pub fb: FrameBuf<Rgb565, StickFrameBuf<'d>>,
-    // pub fb: FrameBuf<Rgb565, StickFrameBuf<'d>>,
-    // fbuf: RawFrameBuf<Rgb565, &'d mut [u8]>,
-    buffer: &'static mut Vec<Rgb565, esp_alloc::InternalMemory>,
+    // buffer: &'static mut Vec<Rgb565, esp_alloc::InternalMemory>,
     bounding_box: Rectangle,
 }
 
@@ -208,16 +218,12 @@ where
     OP: embedded_hal::digital::OutputPin,
 {
     fn new(d: Display<DI, ST7789, OP>, bl: Option<Output<'d>>) -> Self {
-        let buf: &'static mut Vec<Rgb565, esp_alloc::InternalMemory> = FRAME_BUFFER.init_with(|| {
-            let mut blah = Vec::<Rgb565, esp_alloc::InternalMemory>::with_capacity_in(FRAME_BUFFER_SIZE/2, esp_alloc::InternalMemory);
-            blah.resize(FRAME_BUFFER_SIZE/2, Rgb565::default());
-            blah
-        });
+        // let buf: &'static mut Vec<Rgb565, esp_alloc::InternalMemory> = frame_buffer_init();
         let bounding_box = d.bounding_box();
         Self { 
             d, 
             bl,
-            buffer: buf,
+            // buffer: buf,
             bounding_box,
         }
     }
@@ -236,11 +242,7 @@ where
     // let fun = StickFrameBuf::new(fb_data.as_mut_slice());
     // let mut fb = FrameBuf::new(fun, bb_width, bb_height);
 
-        let buf = FRAME_BUFFER.init_with(|| {
-            let mut blah = Vec::<Rgb565, esp_alloc::InternalMemory>::with_capacity_in(FRAME_BUFFER_SIZE/2, esp_alloc::InternalMemory);
-            blah.resize(FRAME_BUFFER_SIZE/2, Rgb565::default());
-            blah
-        });
+        let buf = frame_buffer_init();
         let buffer = StickFrameBuf::new(buf.as_mut_slice());
         let fb = FrameBuf::new(buffer, WIDTH, HEIGHT);
         Self { 
@@ -281,6 +283,20 @@ where
 
 }
 
+// impl<'d, DI: Interface<Word = u8>, OP: embedded_hal::digital::OutputPin> StickDisplay<'d, DI, OP> {
+//     pub async fn fill_contiguous_a<I>(&mut self, area: &Rectangle, colors: I) -> Result<(), DisplayError>
+//     where
+//         I: IntoIterator<Item = Rgb565>,
+//     {
+//         self.draw_iter(
+//             area.points()
+//                 .zip(colors)
+//                 .map(|(pos, color)| Pixel(pos, color)),
+//         )
+//     }
+// }
+
+
 impl<DI, OP> Dimensions for StickDisplay<'_, DI, OP> 
 where 
     DI: Interface<Word = u8>,
@@ -306,16 +322,17 @@ where
     fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
     where
         I: IntoIterator<Item = embedded_graphics::Pixel<Self::Color>> {
-            let mut fb = FrameBuf::new(self.buffer.as_mut_array::<{ WIDTH*HEIGHT }>().expect("really bad"), WIDTH, HEIGHT);
-            fb.draw_iter(pixels)?;
-            // if let Err(e) = self.d.draw_iter(pixels) {
-            //     match e {
-            //         SpiError::Spi(e) => {
-            //             return Err(e.into());
-            //         },
-            //         SpiError::Dc(e) => return Err(e.into()),
-            //     }
-            // }
+            // let mut fb = FrameBuf::new(self.buffer.as_mut_array::<{ WIDTH*HEIGHT }>().expect("really bad"), WIDTH, HEIGHT);
+            // fb.draw_iter(pixels)?;
+            if let Err(_e) = self.d.draw_iter(pixels) {
+                return Err(DisplayError::OtherError);
+                // match e {
+                //     SpiError::Spi(e) => {
+                //         return Err(e.into());
+                //     },
+                //     SpiError::Dc(e) => return Err(e.into()),
+                // }
+            }
             Ok(())
     }
 }
@@ -341,37 +358,6 @@ where
     }
 }
 
-
-
-pub struct StickDisplayBuffer {
-    buffer: &'static mut Vec<Rgb565, esp_alloc::InternalMemory>,
-    bounding_box: Rectangle,
-}
-
-impl Dimensions for StickDisplayBuffer {
-    fn bounding_box(&self) -> Rectangle {
-        self.bounding_box
-    }
-}
-
-impl StickDisplayBuffer {
-    pub fn create() -> Self {
-        let buf: &'static mut Vec<Rgb565, esp_alloc::InternalMemory> = FRAME_BUFFER.init_with(|| {
-            let mut blah = Vec::<Rgb565, esp_alloc::InternalMemory>::with_capacity_in(FRAME_BUFFER_SIZE/2, esp_alloc::InternalMemory);
-            blah.resize(FRAME_BUFFER_SIZE/2, Rgb565::default());
-            blah
-        });
-        let bounding_box = Rectangle::new(Point::zero(), Size::new(WIDTH as u32, HEIGHT as u32));
-        Self { 
-            buffer: buf,
-            bounding_box,
-        }
-    }
-
-    pub fn get_framebuffer(&mut self) -> FrameBuf<Rgb565, &mut [Rgb565; 32400]> {
-        FrameBuf::new(self.buffer.as_mut_array::<{ WIDTH*HEIGHT }>().expect("really bad"), WIDTH, HEIGHT)
-    }
-}
 
 
 #[derive(Debug)]
@@ -433,16 +419,6 @@ impl<'d> DisplayComponents<'d> {
             .with_mosi(mosi);        
 
         let dma = self.dma_channel;
-        // let spi_bus: EspSpiBlockingBus = match dma {
-        //     Some(dma_channel) => {
-        //         let (dma_rx_buf, dma_tx_buf) = create_dma_buffers()?;
-        //         spi_bus
-        //             .with_dma(dma_channel)            
-        //             .with_buffers(dma_rx_buf, dma_tx_buf)
-        //             .into()
-        //     },
-        //     None => spi_bus.into(),
-        // };
         Ok(Self {
             spi_bus: Some(spi_bus),
             dma_channel: dma,
@@ -540,6 +516,32 @@ impl<'d> DisplayBuilder<'d, EspSpiBusBlock<'d>> {
         })
     }
     
+}
+
+impl<'d> DisplayBuilder<'d, EspSpiBusBlock<'d>> {
+    pub fn into_async(self) -> DisplayBuilder<'d, EspSpiBusAsync<'d>> {
+        DisplayBuilder::<'d, EspSpiBusAsync<'d>> {
+            spi_instance: self.spi_instance.into_async(),
+            dc: self.dc,
+            rst: self.rst,
+            cs: self.cs,
+            bl: self.bl,
+            dma_channel: self.dma_channel,
+        }
+    }
+}
+
+impl<'d> DisplayBuilder<'d, EspSpiDmaBusBlock<'d>> {
+    pub fn into_async(self) -> DisplayBuilder<'d, EspSpiDmaBusAsync<'d>> {
+        DisplayBuilder::<'d, EspSpiDmaBusAsync<'d>> {
+            spi_instance: self.spi_instance.into_async(),
+            dc: self.dc,
+            rst: self.rst,
+            cs: self.cs,
+            bl: self.bl,
+            dma_channel: self.dma_channel,
+        }
+    }
 }
 
 impl<'d, SBus> DisplayBuilder<'d, SBus> {

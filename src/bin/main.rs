@@ -3,6 +3,11 @@
 #![feature(slice_as_array)]
 #![feature(where_clause_attrs)]
 
+use alloc::string::{String, ToString};
+use esp_alloc as _;
+extern crate alloc;
+
+use allocator_api2::vec::Vec;
 use defmt::{error, info, trace};
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Instant, Timer};
@@ -22,7 +27,7 @@ use pcf8563::Pcf8563;
 
 use rand::{Rng, SeedableRng};
 use static_cell::StaticCell;
-use watchy_m5::{buttons::{btn_task, initialize_buttons, INPUT_BUTTONS}, display::{DisplayError, DisplayBuilder, DisplayComponents, StickDisplayT, StickFrameBuf}};
+use watchy_m5::{buttons::{btn_task, initialize_buttons, INPUT_BUTTONS}, display::{DisplayBuilder, DisplayComponents, DisplayError, StickDisplayT, StickFrameBuf}, display_buf::StickDisplayBuffer, widgets::{ScrollingMarquee, StyleableTextWindow, TextWindow}};
 use watchy_m5::display::{HEIGHT, WIDTH};
 use watchy_m5::buzzer::{Buzzer, BuzzerChannel, BuzzerState};
 use watchy_m5::music::Song;
@@ -35,19 +40,16 @@ use embassy_sync::
 
 use {esp_backtrace as _, esp_println as _};
 
-use core::{cell::RefCell, ptr::addr_of_mut};
+use core::{cell::RefCell, ptr::addr_of_mut, str::{from_utf8, from_utf8_unchecked}};
 use embedded_graphics::{
-    geometry::AnchorX, mono_font::{ascii::FONT_10X20, MonoTextStyle}, pixelcolor::Rgb565, prelude::*, primitives::{Circle, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle, StrokeAlignment, Triangle}, text::Text
+    geometry::AnchorX, mono_font::{ascii::{FONT_10X20, FONT_9X15}, MonoTextStyle}, pixelcolor::Rgb565, prelude::*, primitives::{Circle, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle, StrokeAlignment, StyledDrawable, Triangle}, text::{renderer::CharacterStyle, Text}
 };
 
 use embedded_text::{
     alignment::HorizontalAlignment,
-    style::{HeightMode, TextBoxStyleBuilder},
+    style::{HeightMode, TextBoxStyle, TextBoxStyleBuilder},
     TextBox,
 };
-// use embedded_layout::{layout::linear::LinearLayout, prelude::*};
-
-// extern crate alloc;
 
 
 // #[embassy_executor::task]
@@ -168,7 +170,7 @@ async fn main(spawner: Spawner) {
         DisplayComponents::new(dc, rst, cs)
             .with_bl(backlight)
             .with_dma(peripherals.DMA_SPI2.into())
-            .with_spi(peripherals.SPI2.into(), mosi, sclk)
+            .with_spi(peripherals.SPI2.into(), sclk, mosi)
             .expect("msg")
     };
     
@@ -264,15 +266,231 @@ async fn main(spawner: Spawner) {
 async fn display_task(components: DisplayComponents<'static>, esp_rng: esp_hal::rng::Rng) {
     let builder = DisplayBuilder::from_components(components);
     let mut display = builder
+        .try_into_dma().unwrap()
+        .into_async()
         .to_exclusive_device().expect("msg")
         .build_mipidsi();
-    display.on();
 
-    if let Err(e) = display_task_worker(display, esp_rng).await {
-        error!("display error: {}!", e);
-        panic!()
+    display.on();
+    // let r = display.bounding_box();
+    let mut display_buffer = StickDisplayBuffer::create();
+    // error!("made it here!");
+
+    let fb_display = display_buffer.get_framebuffer();
+    if let Err(e) = render_worker(display, esp_rng, fb_display).await {
+        error!("error: {}", e);
     }
+
 }
+
+async fn render_worker(mut display: impl DrawTarget<Color = Rgb565, Error = DisplayError>, mut esp_rng: esp_hal::rng::Rng, mut fb_display: FrameBuf<Rgb565, &mut [Rgb565; WIDTH*HEIGHT]>) -> Result<(), DisplayError> {
+
+    let r = display.bounding_box();
+
+    let bg_color = Rgb565::CSS_LIGHT_BLUE;
+    display.clear(bg_color)?;
+    
+    fb_display.clear(bg_color)?;
+
+    let full_screen = Rectangle::new(Point::zero(), Size::new(WIDTH as u32, HEIGHT as u32));
+    let bottom_right = full_screen.bottom_right().unwrap_or_default();
+    let y_one_third = bottom_right.y_axis().component_div(Point::new(1, 3));
+
+    // let width = full_screen.size.width as i32; // 135
+    // let height = full_screen.size.height as i32; //240;
+
+
+    let bottom_two_thirds_size = full_screen.size.component_mul(Size::new(1, 2)).component_div(Size::new(1, 3));
+    let bottom_two_thirds = Rectangle::new(y_one_third, bottom_two_thirds_size);
+    
+
+
+    let bb_tl = Point::new(0,88);
+    let bb_size = Size::new(135, 152);
+    let bouncy_area = Rectangle::new(bb_tl, bb_size);
+    
+    
+    let info_window = {
+        let font = &FONT_9X15;
+        let text_color = Rgb565::BLACK;
+        let text = "Test 123, Blah blah blah blah!";
+        let textbox_style = TextBoxStyleBuilder::new()
+            .height_mode(HeightMode::FitToText)
+            .alignment(HorizontalAlignment::Center)
+            .paragraph_spacing(2)
+            .build();
+        let tl = full_screen.top_left + Point::new(1, 1);
+        let size = full_screen.size.component_div(Size::new(1, 3)) - Size::new(1, 1);
+        TextWindow::new(tl, size, font, text_color)
+            .with_border_style(PrimitiveStyle::with_stroke(Rgb565::BLACK, 4))
+            .with_background_color(Rgb565::YELLOW)
+            .with_textbox_style(textbox_style)
+            .with_text(text)
+            .align_to(&r, horizontal::Center, vertical::Top)
+    };
+    
+    info!("info_window: {}", info_window.bounds());
+
+    info_window.draw(&mut fb_display)?;
+
+    info!("full_screen: {}", full_screen);
+
+    let half_screen = full_screen.resized(full_screen.size.component_div(Size::new(1, 2)), embedded_graphics::geometry::AnchorPoint::TopLeft);
+    info!("half_screen: {}", half_screen);
+
+    let r = Rectangle::with_corners(y_one_third, half_screen.anchor_point(embedded_graphics::geometry::AnchorPoint::BottomRight));
+    info!("r: {}", r);
+    let mut character_style = MonoTextStyle::new(&embedded_graphics::mono_font::ascii::FONT_9X15, Rgb565::BLUE);
+    character_style.set_background_color(Some(Rgb565::BLACK));
+
+    let mut marquee = {        
+        let mut marquee = ScrollingMarquee::from_rect(r, &embedded_graphics::mono_font::ascii::FONT_9X15, Rgb565::BLUE)
+            .with_character_style(character_style);
+        let mut box_style = marquee.border_style();
+        box_style.fill_color = Some(Rgb565::GREEN);
+        box_style.stroke_color = Some(Rgb565::RED);
+        box_style.stroke_width = 2;
+        marquee.set_border_style(box_style);
+    
+        marquee.set_translation(Point::new(-2, 0));
+        marquee
+    };
+    marquee.rotate();
+    marquee.draw(&mut fb_display)?;
+
+
+    // Create styles used by the drawing operations.
+    let thin_stroke = PrimitiveStyle::with_stroke(Rgb565::BLACK, 1);
+    let thick_stroke = PrimitiveStyle::with_stroke(Rgb565::BLACK, 3);
+    // let border_stroke = PrimitiveStyleBuilder::new()
+    //     .stroke_color(Rgb565::BLACK)
+    //     .stroke_width(3)
+    //     .stroke_alignment(StrokeAlignment::Inside)
+    //     .build();
+    let ball_bound_sb = PrimitiveStyleBuilder::new()
+        .stroke_color(Rgb565::BLACK)
+        .stroke_width(3)
+        .stroke_alignment(StrokeAlignment::Inside)
+        .fill_color(Rgb565::CYAN);
+    let fill = PrimitiveStyle::with_fill(Rgb565::CSS_ORANGE);
+
+    
+    let bb_tl = half_screen.anchor_point(embedded_graphics::geometry::AnchorPoint::BottomLeft); //Point::new(0,88);
+    let bb_size = half_screen.size; //Size::new(135, 152);
+    // let bounce_box = Rectangle::new(bb_tl, bb_size);
+    let bounce_box = Rectangle::new(Point::zero(), bb_size);
+    info!("bounce_box: {:?}", bounce_box);
+
+    let circle = Circle::with_center(bounce_box.bounding_box().center(), 15);
+    let mut ball = Sprite::<Rgb565>::new("ball1", circle.translate(Point { x: 30, y: 25 }))
+        .with_style(PrimitiveStyle::with_fill(Rgb565::YELLOW))
+        .with_line_style(PrimitiveStyle::with_stroke(Rgb565::BLACK, 1));
+    
+    let mut ball2 = Sprite::<Rgb565>::new("ball2", circle.translate(Point { x: -30, y: -25 }))
+        .with_style(PrimitiveStyle::with_fill(Rgb565::MAGENTA))
+        .with_line_style(thin_stroke);
+
+
+    let mut fun_rng = rand::rngs::SmallRng::from_rng(&mut esp_rng);
+
+    ball.set_direction_from_angle(Angle::from_degrees(fun_rng.random_range(0..360) as f32));
+    ball2.set_direction_from_angle(Angle::from_degrees(fun_rng.random_range(0..360) as f32));
+    let mut sprite_container = SpriteContainer::<Rgb565, 10>::new(bounce_box);
+    let _ = sprite_container.add_sprite(ball);
+    let _ = sprite_container.add_sprite(ball2);
+    // let stationary_shape = Rectangle::with_center(bounce_box.bounding_box().center(), Size::new_equal(25));
+    let stationary_shape = Circle::with_center(bounce_box.bounding_box().center(), 25);
+    let stationary = Sprite::new("stationary", stationary_shape)
+        .with_style(fill)
+        .with_line_style(thick_stroke);
+    let _ = sprite_container.add_sprite(stationary);
+    {
+        let t_vertex1 = stationary_shape.top_left + Point::new(-40, -30);
+        let mut blah = Sprite::new("circle", Circle::with_center(t_vertex1, 25))
+            .with_style(PrimitiveStyle::with_fill(Rgb565::MAGENTA))
+            .with_line_style(thick_stroke);
+        blah.set_direction_from_angle(Angle::from_degrees(fun_rng.random_range(0..360) as f32));
+        let _ = sprite_container.add_sprite(blah);
+    }
+    {
+        let t_vertex1 = stationary_shape.top_left + Point::new(-40, -30);
+        let t_v2 = t_vertex1 + Point::new(-10, -25);
+        let t_v3 = t_vertex1 + Point::new(10, -25);
+        let mut blah = Sprite::new("triangle", Triangle::new(t_vertex1, t_v2, t_v3))
+            .with_style(PrimitiveStyle::with_fill(Rgb565::MAGENTA))
+            .with_line_style(thick_stroke);
+        blah.set_direction_from_angle(Angle::from_degrees(fun_rng.random_range(0..360) as f32));
+        let _ = sprite_container.add_sprite(blah);
+    }
+
+    let mut counter = 0;
+    let mut last_hello_tick = Instant::now();
+    let mut last_bounce_tick = Instant::now();
+    let mut bb_style: PrimitiveStyle<Rgb565> = ball_bound_sb.build();
+    let bb_width = bb_size.width as usize;
+    let bb_height = bb_size.height as usize;
+
+
+    display.fill_contiguous(&full_screen, fb_display.data.iter().copied())?;
+
+    let bb_width = bb_size.width as usize;
+    let bb_height = bb_size.height as usize;
+    let mut fb_data = StickFrameBuf::create_vec( bb_width, bb_height);
+    let fun = StickFrameBuf::new(fb_data.as_mut_slice());
+    // let mut fb = FrameBuf::new_with_origin(fun, bb_width, bb_height, bb_tl);
+    let mut fb = FrameBuf::new(fun, bb_width, bb_height);
+
+    loop {
+
+        // let bg_color = colors[(counter / 8) % colors.len()];
+        if last_bounce_tick.elapsed() >= Duration::from_millis(50) {
+            // let r = Rectangle::new(bb_tl, half_screen.size());
+            // let mut fb = fb_display.clipped(&r);
+            let now = Instant::now();
+            last_bounce_tick = now;
+            sprite_container.update_positions();
+            {
+                // fb.clear(bg_color)?;
+                let bounce_box = bounce_box.into_styled(bb_style);
+                bounce_box.draw(&mut fb)?;    
+                // sprite_container.set_bg_color(Some(bg_color));
+                sprite_container.draw(&mut fb)?;
+            }
+                        
+            let fb_iter = fb.data.0.iter().copied();
+            let r = Rectangle::new(bb_tl, fb_display.size());
+            display.fill_contiguous(&r, fb_iter)?;
+            {
+                let elapsed = now.elapsed();
+                if elapsed.as_ticks() > 300 { info!("update_position plus draw took {}", elapsed); }
+            }
+
+        }
+
+        if last_hello_tick.elapsed() >= Duration::from_secs(1) {
+            counter += 1;
+            display.fill_solid(&marquee.boundary_box(), bg_color)?;
+            marquee.rotate();
+            marquee.draw(&mut display)?;
+
+            // let mut sub_window = display.clipped(&sub_window_r);
+            // // Fill the display with alternating colors every 8 frames
+            // sub_window.clear(bg_color)?;
+            // bb_style = ball_bound_sb.fill_color(bg_color).build();
+            // // Draw text
+            last_hello_tick = Instant::now();
+        }
+
+
+        Timer::after(Duration::from_millis(50)).await;
+    }
+    // if let Err(e) = display_task_worker(display, esp_rng).await {
+    //     error!("display error: {}!", e);
+    //     panic!()
+    // }
+}
+
+
 
 // static FB_DATA: StaticCell<Vec<Rgb565, esp_alloc::InternalMemory>> = StaticCell::new();
 
@@ -395,6 +613,7 @@ async fn display_task_worker<SBus: embedded_hal::spi::SpiBus>(mut display: Stick
     let fun = StickFrameBuf::new(fb_data.as_mut_slice());
     // let mut fb = FrameBuf::new_with_origin(fun, bb_width, bb_height, bb_tl);
     let mut fb = FrameBuf::new(fun, bb_width, bb_height);
+
     loop {
         
         let bg_color = colors[(counter / 8) % colors.len()];

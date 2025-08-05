@@ -1220,6 +1220,7 @@ dependencies = [
  "defmt 0.3.100",
  "hash32",
  "stable_deref_trait",
+ "ufmt-write",
 ]
 
 [[package]]
@@ -2185,6 +2186,7 @@ dependencies = [
  "smoltcp",
  "static_cell",
  "thiserror-no-std",
+ "ufmt-write",
 ]
 
 [[package]]

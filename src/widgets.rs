@@ -311,18 +311,22 @@ impl<'a, C: PixelColor + Default> ScrollingMarquee<'a, C> {
 
     pub fn rotate(&mut self) {
         if !(self.translation == Point::zero()) {
+            let r = self.boundary_box;
             let mut bounds = self.text_window.boundary_box;
-            bounds.top_left += self.translation;
-            if self.boundary_box.intersection(&bounds).is_zero_sized() {
-                // info!("new_tl: {} offset: {}", bounds.top_left, offset);                
-                if self.translation.x != 0 {
-                    bounds.top_left.x += (2* bounds.size.width as i32) + self.translation.x;
-                }
-                if self.translation.y != 0 {
-                    bounds.top_left.y += (2* bounds.size.height as i32) + self.translation.y;
-                }
+            if r.intersection(&bounds).is_zero_sized() {
+                bounds.top_left.x = (r.top_left + r.size).x;
             }
-            // info!("new = {}, {}", bounds.top_left, bounds.size);
+            // let window_top_left = r.top_left;
+            // let window_bottom_right = r.top_left + r.size;
+            // let scrolled_tl = bounds.top_left;
+            // let scrolled_br = bounds.top_left + bounds.size;
+            // if !r.contains(scrolled_tl) && !r.contains(scrolled_br)
+            // if r.intersection(&bounds).is_zero_sized() {
+            //     bounds.top_left.x = (bounds.top_left.x + self.translation.x).div_euclid(r.size.width as i32);
+            //     bounds.top_left.y = (bounds.top_left.y + self.translation.y).div_euclid(r.size.height as i32);
+            // }
+            bounds.top_left += self.translation;
+            info!("new = {}, {}", bounds.top_left, self.text_window.boundary_box.size);
             self.text_window.move_to(bounds.top_left);
         }
     }

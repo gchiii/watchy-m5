@@ -268,6 +268,7 @@ impl<'a> ButtonInputCollection<'a> {
             let event = self.a.handle(ts);
             self.a_pub.publish_immediate(event);
             trace!("Button A");
+            info!("{}", esp_alloc::HEAP.stats());
         }
         if b.is_interrupt_set() {
             let event = self.b.handle(ts);

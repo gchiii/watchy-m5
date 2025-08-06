@@ -9,7 +9,8 @@ use embedded_graphics::{
     prelude::*,
 };
 
-use embedded_graphics_framebuf::backends::FrameBufferBackend;
+use embedded_graphics_framebuf::backends::{DMACapableFrameBufferBackend, FrameBufferBackend};
+use embedded_graphics_framebuf::FrameBuf;
 #[cfg(feature = "mipidsi")] 
 use embedded_graphics_framebuf::FrameBuf;
 
@@ -252,6 +253,27 @@ impl<C: PixelColor + Default> RawBufferBackendMut for StickExtraFrameBuf<C> {
     }
 }
 
+impl<C: PixelColor + Default> FrameBufferBackend for StickExtraFrameBuf<C> {
+    type Color = C;
+
+    fn set(&mut self, index: usize, color: Self::Color) {
+        self.0[index] = color;
+    }
+
+    fn get(&self, index: usize) -> Self::Color {
+        self.0[index]
+    }
+
+    fn nr_elements(&self) -> usize {
+        self.0.len()
+    }
+}
+
+unsafe impl<C: PixelColor + Default> DMACapableFrameBufferBackend for StickExtraFrameBuf<C> {
+    fn data_ptr(&self) -> *const Self::Color {
+        self.0.as_ptr()
+    }
+}
 
 #[derive(Debug)]
 pub struct StickFrameBuf<'a>(pub &'a mut [Rgb565]);

@@ -28,7 +28,8 @@ use pcf8563::Pcf8563;
 
 use rand::{Rng, SeedableRng};
 use static_cell::StaticCell;
-use watchy_m5::{buttons::{btn_task, initialize_buttons, INPUT_BUTTONS}, display::{byte_slice_to_pixels, Backlight, DisplayBuilder, DisplayComponents, DisplayError, DrawAsync, StickDisplayT, StickExtraFrameBuf, StickFrameBuf, StickRawFrameBuf}, display_buf::StickDisplayBuffer, widgets::{ScrollingMarquee, StyleableTextWindow, TextWindow}};
+use u8g2_fonts::{fonts::{u8g2_font_6x12_m_symbols, u8g2_font_6x12_t_symbols}, FontRenderer, U8g2TextStyle};
+use watchy_m5::{buttons::{btn_task, initialize_buttons, INPUT_BUTTONS}, display::{byte_slice_to_pixels, Backlight, DisplayBuilder, DisplayComponents, DisplayError, DrawAsync, StickDisplayT, StickExtraFrameBuf, StickFrameBuf, StickRawFrameBuf}, display_buf::StickDisplayBuffer, widgets::{MyCharacterStyle, ScrollingMarquee, StyleableTextWindow, TextWindow}};
 use watchy_m5::display::{HEIGHT, WIDTH};
 use watchy_m5::buzzer::{Buzzer, BuzzerChannel, BuzzerState};
 use watchy_m5::music::Song;
@@ -309,20 +310,20 @@ async fn render_worker(mut display: impl DrawTarget<Color = Rgb565, Error = Disp
     let bb_size = Size::new(135, 152);
     let bouncy_area = Rectangle::new(bb_tl, bb_size);
     
-    
     let mut info_window = {
-        let font = &FONT_5X7;
+        let font = &embedded_graphics::mono_font::iso_8859_1::FONT_5X8;//&FONT_5X7;
         let text_color = Rgb565::YELLOW;
+        let cs = U8g2TextStyle::new(u8g2_font_6x12_m_symbols, text_color);
         let text = "Test 123, Blah blah blah blah!";
         let textbox_style = TextBoxStyleBuilder::new()
-            .height_mode(HeightMode::Exact(embedded_text::style::VerticalOverdraw::Hidden))
+            .height_mode(HeightMode::Exact(embedded_text::style::VerticalOverdraw::Visible))
             .vertical_alignment(embedded_text::alignment::VerticalAlignment::Top)
             .alignment(HorizontalAlignment::Left)
-            .paragraph_spacing(2)
+            // .paragraph_spacing(2)
             .build();
         let tl = full_screen.top_left + Point::new(1, 1);
         let size = full_screen.size.component_mul(Size::new(1, 4)).component_div(Size::new(1, 10));
-        TextWindow::new(tl, size, font, text_color)
+        TextWindow::new(tl, size, cs.into())
             .with_border_style(PrimitiveStyle::with_stroke(Rgb565::BLACK, 4))
             .with_background_color(Rgb565::BLACK)
             .with_textbox_style(textbox_style)
@@ -344,12 +345,13 @@ async fn render_worker(mut display: impl DrawTarget<Color = Rgb565, Error = Disp
         bottom_right.y_axis().component_mul(Point::new(1, 4)).component_div(Point::new(1, 10)),
         half_screen.anchor_point(embedded_graphics::geometry::AnchorPoint::BottomRight));
     info!("r: {}", r);
-    let mut character_style = MonoTextStyle::new(&embedded_graphics::mono_font::ascii::FONT_9X15, Rgb565::BLUE);
+    // let mut character_style = MonoTextStyle::new(&embedded_graphics::mono_font::ascii::FONT_9X15, Rgb565::BLUE);
+    let mut character_style = U8g2TextStyle::new(u8g2_font_6x12_m_symbols, Rgb565::BLUE);
     character_style.set_background_color(Some(Rgb565::BLACK));
 
     let mut marquee = {        
         let mut marquee = ScrollingMarquee::from_rect(r, &embedded_graphics::mono_font::ascii::FONT_9X15, Rgb565::BLUE)
-            .with_character_style(character_style);
+            .with_character_style(character_style.into());
         let mut box_style = marquee.border_style();
         box_style.fill_color = Some(Rgb565::GREEN);
         box_style.stroke_color = Some(Rgb565::RED);

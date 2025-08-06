@@ -4,7 +4,7 @@ use {esp_backtrace as _, esp_println as _};
 
 use core::marker::PhantomData;
 
-use embassy_time::{Duration, Timer};
+use embassy_time::{Duration, Instant, Timer};
 use esp_hal::time::Rate;
 
 #[allow(unused)]
@@ -211,6 +211,7 @@ impl Song<'_> {
 
     pub async fn play_next_note(&mut self, tx: BuzzerSender<'_>) -> Option<usize> {
         if let Some(buz_note) = self.next_note() {
+            let now = Instant::now();
             let duration_ms = match buz_note {
                 BuzzerNote::Rest(duration_ms) => duration_ms,
                 BuzzerNote::Sound(rate, duration_ms) => {
@@ -218,7 +219,9 @@ impl Song<'_> {
                     duration_ms
                 },
             } as u64;
-            Timer::after(Duration::from_millis(duration_ms)).await;
+            let expires_at = now + Duration::from_millis_floor(duration_ms as u64);
+            Timer::at(expires_at).await;
+            // Timer::after(Duration::from_millis(duration_ms)).await;
             Some(self.index)
         } else {
             self.index = 0;

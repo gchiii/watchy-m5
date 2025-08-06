@@ -28,7 +28,7 @@ use pcf8563::Pcf8563;
 
 use rand::{Rng, SeedableRng};
 use static_cell::StaticCell;
-use watchy_m5::{buttons::{btn_task, initialize_buttons, INPUT_BUTTONS}, display::{Backlight, DisplayBuilder, DisplayComponents, DisplayError, DrawAsync, StickDisplayT, StickExtraFrameBuf, StickFrameBuf, StickRawFrameBuf}, display_buf::StickDisplayBuffer, widgets::{ScrollingMarquee, StyleableTextWindow, TextWindow}};
+use watchy_m5::{buttons::{btn_task, initialize_buttons, INPUT_BUTTONS}, display::{byte_slice_to_pixels, Backlight, DisplayBuilder, DisplayComponents, DisplayError, DrawAsync, StickDisplayT, StickExtraFrameBuf, StickFrameBuf, StickRawFrameBuf}, display_buf::StickDisplayBuffer, widgets::{ScrollingMarquee, StyleableTextWindow, TextWindow}};
 use watchy_m5::display::{HEIGHT, WIDTH};
 use watchy_m5::buzzer::{Buzzer, BuzzerChannel, BuzzerState};
 use watchy_m5::music::Song;
@@ -43,7 +43,7 @@ use {esp_backtrace as _, esp_println as _};
 
 use core::{cell::RefCell, ptr::addr_of_mut, str::{from_utf8, from_utf8_unchecked}};
 use embedded_graphics::{
-    geometry::AnchorX, mono_font::{ascii::{FONT_10X20, FONT_9X15}, MonoTextStyle}, pixelcolor::Rgb565, prelude::*, primitives::{Circle, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle, StrokeAlignment, StyledDrawable, Triangle}, text::{renderer::CharacterStyle, Text}
+    geometry::AnchorX, mono_font::{ascii::{FONT_10X20, FONT_9X15}, iso_8859_1::FONT_5X7, MonoTextStyle}, pixelcolor::Rgb565, prelude::*, primitives::{Circle, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle, StrokeAlignment, StyledDrawable, Triangle}, text::{renderer::CharacterStyle, Text}
 };
 
 use embedded_text::{
@@ -310,20 +310,21 @@ async fn render_worker(mut display: impl DrawTarget<Color = Rgb565, Error = Disp
     let bouncy_area = Rectangle::new(bb_tl, bb_size);
     
     
-    let info_window = {
-        let font = &FONT_9X15;
-        let text_color = Rgb565::BLACK;
+    let mut info_window = {
+        let font = &FONT_5X7;
+        let text_color = Rgb565::YELLOW;
         let text = "Test 123, Blah blah blah blah!";
         let textbox_style = TextBoxStyleBuilder::new()
-            .height_mode(HeightMode::FitToText)
-            .alignment(HorizontalAlignment::Center)
+            .height_mode(HeightMode::Exact(embedded_text::style::VerticalOverdraw::Hidden))
+            .vertical_alignment(embedded_text::alignment::VerticalAlignment::Top)
+            .alignment(HorizontalAlignment::Left)
             .paragraph_spacing(2)
             .build();
         let tl = full_screen.top_left + Point::new(1, 1);
-        let size = full_screen.size.component_div(Size::new(1, 3)) - Size::new(1, 1);
+        let size = full_screen.size.component_mul(Size::new(1, 4)).component_div(Size::new(1, 10));
         TextWindow::new(tl, size, font, text_color)
             .with_border_style(PrimitiveStyle::with_stroke(Rgb565::BLACK, 4))
-            .with_background_color(Rgb565::YELLOW)
+            .with_background_color(Rgb565::BLACK)
             .with_textbox_style(textbox_style)
             .with_text(text)
             .align_to(&full_screen_r, horizontal::Center, vertical::Top)
@@ -338,7 +339,10 @@ async fn render_worker(mut display: impl DrawTarget<Color = Rgb565, Error = Disp
     let half_screen = full_screen.resized(full_screen.size.component_div(Size::new(1, 2)), embedded_graphics::geometry::AnchorPoint::TopLeft);
     info!("half_screen: {}", half_screen);
 
-    let r = Rectangle::with_corners(y_one_third, half_screen.anchor_point(embedded_graphics::geometry::AnchorPoint::BottomRight));
+    let r = Rectangle::with_corners(
+        // y_one_third, 
+        bottom_right.y_axis().component_mul(Point::new(1, 4)).component_div(Point::new(1, 10)),
+        half_screen.anchor_point(embedded_graphics::geometry::AnchorPoint::BottomRight));
     info!("r: {}", r);
     let mut character_style = MonoTextStyle::new(&embedded_graphics::mono_font::ascii::FONT_9X15, Rgb565::BLUE);
     character_style.set_background_color(Some(Rgb565::BLACK));
@@ -355,7 +359,7 @@ async fn render_worker(mut display: impl DrawTarget<Color = Rgb565, Error = Disp
         marquee.set_translation(Point::new(-5, 0));
         marquee
     };
-    marquee.rotate();
+    // marquee.rotate();
     marquee.draw(&mut display)?;
 
     display.draw_screen().await?;
@@ -427,6 +431,7 @@ async fn render_worker(mut display: impl DrawTarget<Color = Rgb565, Error = Disp
     let mut counter = 0;
     let mut last_hello_tick = Instant::now();
     let mut last_bounce_tick = Instant::now();
+    let mut last_info_tick = Instant::now();
     let mut bb_style: PrimitiveStyle<Rgb565> = ball_bound_sb.build();
     let bb_width = bb_size.width as usize;
     let bb_height = bb_size.height as usize;
@@ -437,7 +442,7 @@ async fn render_worker(mut display: impl DrawTarget<Color = Rgb565, Error = Disp
     let bb_width = bb_size.width as usize;
     let bb_height = bb_size.height as usize;
     // let mut fb_data = StickExtraFrameBuf::create_vec::<Rgb565>( bb_width, bb_height);
-    let fb_data = StickExtraFrameBuf::new(bb_width, bb_height);
+    let fb_data = StickExtraFrameBuf::<Rgb565>::new(bb_width, bb_height);
     let mut fb = RawFrameBuf::new(fb_data, bb_width, bb_height);
 
     loop {
@@ -457,10 +462,10 @@ async fn render_worker(mut display: impl DrawTarget<Color = Rgb565, Error = Disp
                 sprite_container.draw(&mut fb)?;
             }
                         
-            // let fb_iter = fb.data.0.iter().copied();
-            let fb_iter = fb.data().0.iter().copied();
+            let data = fb.as_bytes();
+            let pixels = byte_slice_to_pixels::<Rgb565>(data);
             let r = Rectangle::new(bb_tl, fb.size());
-            display.fill_contiguous(&r, fb_iter)?;
+            display.fill_contiguous(&r, pixels.iter().copied())?;
             display.draw_area(&r, fb.as_bytes()).await?;
             // {
             //     let elapsed = now.elapsed();
@@ -468,7 +473,13 @@ async fn render_worker(mut display: impl DrawTarget<Color = Rgb565, Error = Disp
             // }
         }
 
-        // if last_hello_tick.elapsed() >= Duration::from_secs(1) {
+        if last_info_tick.elapsed() >= Duration::from_secs(1) {
+            let stats = esp_alloc::HEAP.stats();
+            info_window.set_text(stats);
+            info_window.draw(&mut display)?;
+            display.draw_sub_region(&info_window.bounds()).await?;
+        }
+
         if last_hello_tick.elapsed() >= Duration::from_millis(150) {
             counter += 1;
             display.fill_solid(&marquee.boundary_box(), bg_color)?;

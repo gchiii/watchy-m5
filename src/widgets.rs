@@ -228,7 +228,7 @@ impl<'a, C: PixelColor + Default> Drawable for TextWindow<'a, C> {
     where
         D: DrawTarget<Color = Self::Color> 
     {
-        let mut bb = self.boundary_box;
+        let bb = self.boundary_box;
         bb.draw_styled(&self.border_style, target)?;
         let mut tb = TextBox::with_textbox_style(&self.text, bb, self.character_style, self.textbox_style);
         tb.align_to_mut(&self.boundary_box, horizontal::Center, vertical::Center);
@@ -309,24 +309,29 @@ impl<'a, C: PixelColor + Default> ScrollingMarquee<'a, C> {
     }
 
 
+    fn euclid_wrap(point: Point, rectangle: &Rectangle) -> Point {
+        let origin = rectangle.top_left;
+        let offset = point - origin;
+        let size = rectangle.size;
+
+        // Wrap x-coordinate
+        let x = (offset.x).rem_euclid(size.width as i32 + 1) + origin.x;
+
+        // Wrap y-coordinate
+        let y = (offset.y).rem_euclid(size.height as i32 + 1) + origin.y;
+
+        Point { x, y }
+    }
+
     pub fn rotate(&mut self) {
         if !(self.translation == Point::zero()) {
-            let r = self.boundary_box;
+            let r = self.boundary_box; 
             let mut bounds = self.text_window.boundary_box;
-            if r.intersection(&bounds).is_zero_sized() {
-                bounds.top_left.x = (r.top_left + r.size).x;
-            }
-            // let window_top_left = r.top_left;
-            // let window_bottom_right = r.top_left + r.size;
-            // let scrolled_tl = bounds.top_left;
-            // let scrolled_br = bounds.top_left + bounds.size;
-            // if !r.contains(scrolled_tl) && !r.contains(scrolled_br)
-            // if r.intersection(&bounds).is_zero_sized() {
-            //     bounds.top_left.x = (bounds.top_left.x + self.translation.x).div_euclid(r.size.width as i32);
-            //     bounds.top_left.y = (bounds.top_left.y + self.translation.y).div_euclid(r.size.height as i32);
-            // }
-            bounds.top_left += self.translation;
-            info!("new = {}, {}", bounds.top_left, self.text_window.boundary_box.size);
+            let virtual_origin = r.top_left - bounds.size;
+            let virtual_space = Rectangle::new(virtual_origin, r.size + bounds.size);
+            let current = bounds.top_left;
+            let wrapped = Self::euclid_wrap(current + self.translation, &virtual_space);
+            bounds.top_left = wrapped;
             self.text_window.move_to(bounds.top_left);
         }
     }

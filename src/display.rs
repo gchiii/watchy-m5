@@ -1,12 +1,7 @@
-use core::alloc::Layout;
 use core::fmt::Debug;
-use core::ptr::NonNull;
 
-use allocator_api2::alloc::{alloc_zeroed, handle_alloc_error, Allocator};
-use allocator_api2::boxed::Box;
 use allocator_api2::vec::Vec;
-use bytemuck::TransparentWrapper;
-use defmt::{error, info};
+use defmt::error;
 use embedded_graphics::primitives::Rectangle;
 use embedded_graphics::{
     draw_target::DrawTarget, 
@@ -15,8 +10,10 @@ use embedded_graphics::{
 };
 
 use embedded_graphics_framebuf::backends::FrameBufferBackend;
+#[cfg(feature = "mipidsi")] 
 use embedded_graphics_framebuf::FrameBuf;
 
+#[cfg(feature = "mipidsi")] 
 use embedded_hal_async::spi::SpiBus;
 use embedded_hal_bus::spi::{DeviceError, ExclusiveDevice};
 #[cfg(feature = "mipidsi")] 
@@ -115,10 +112,13 @@ pub const HEIGHT: usize = 240;
 
 // Rgb565 uses 2 bytes per pixel
 // const PXL_SIZE: usize = 2;
+#[cfg(feature = "lcdasync")]
 const FRAME_BUFFER_SIZE: usize = WIDTH * HEIGHT * 2;
 
 // Use StaticCell to create a static, zero-initialized buffer.
+#[cfg(feature = "lcdasync")]
 static FRAME_BUFFER: StaticCell<Vec<u8, esp_alloc::InternalMemory>> = StaticCell::new();
+#[cfg(feature = "lcdasync")]
 fn frame_buffer_init() -> &'static mut Vec<u8, esp_alloc::InternalMemory> {
     let buf: &'static mut Vec<u8, esp_alloc::InternalMemory> = FRAME_BUFFER.init_with(|| {
         let mut fb_vec = Vec::<u8, esp_alloc::InternalMemory>::with_capacity_in(FRAME_BUFFER_SIZE, esp_alloc::InternalMemory);
@@ -128,12 +128,11 @@ fn frame_buffer_init() -> &'static mut Vec<u8, esp_alloc::InternalMemory> {
     buf
 }
 
-// const PIXEL_ROW_LEN: usize = WIDTH;
-
-// const BUFLEN: usize = 4096;
-const BUFLEN: usize = 20 * WIDTH * size_of::<Rgb565>();
 const DMA_BUFLEN: usize = 16_000;
-// static DISPLAY_BUF: StaticCell<[u8; BUFLEN]> = StaticCell::new();
+// const BUFLEN: usize = 4096;
+#[cfg(feature = "mipidsi")]
+const BUFLEN: usize = 20 * WIDTH * size_of::<Rgb565>();
+#[cfg(feature = "mipidsi")]
 static DISPLAY_BUF: StaticCell<Vec<u8, esp_alloc::InternalMemory>> = StaticCell::new();
 
 #[cfg(all(feature = "lcdasync", feature = "mipidsi"))]
@@ -175,6 +174,8 @@ impl StickRawFrameBuf {
         Self(data)
     }
 }
+
+
 
 impl RawBufferBackendMut for StickRawFrameBuf {
     fn as_mut_u8_slice(&mut self) -> &mut [u8] {
@@ -226,6 +227,15 @@ impl<C: PixelColor + Default> StickExtraFrameBuf<C> {
     }
 
 }
+
+pub fn byte_slice_to_pixels<C: PixelColor>(bytes: &[u8]) -> &[C] {
+    let len = bytes.len() / core::mem::size_of::<C>();
+    let ptr = bytes.as_ptr() as *const C;
+    unsafe {
+        core::slice::from_raw_parts(ptr, len)
+    }
+}
+
 
 impl<C: PixelColor + Default> RawBufferBackendMut for StickExtraFrameBuf<C> {
     fn as_mut_u8_slice(&mut self) -> &mut [u8] {
@@ -352,32 +362,13 @@ impl<'d, DI, OP> DrawAsync for StickDisplay<'d, DI, OP>
     async fn draw_sub_region(&mut self, region: &Rectangle) -> Result<(), DisplayError> {
         const BYTES_PER_PIXEL: usize = size_of::<Rgb565>();
         const BYTES_PER_ROW: usize = WIDTH * BYTES_PER_PIXEL;
-        // info!("BYTES_PER_ROW: {}", BYTES_PER_ROW);
 
-        // info!("draw_region: {}", region);
         let fb_bytes = self.fb.as_bytes();
         if region.size < self.bounding_box.size {
-            // this is the offset in bytes for where our region data starts in the row
-            let region_row_start = region.top_left.x as usize * BYTES_PER_PIXEL;
-            let region_row_width = region.size.width as usize * BYTES_PER_PIXEL;
-            let region_row_end = region_row_start + region_row_width;
-            // info!("fb_bytes.len(): {}", fb_bytes.len());
-            let (all_rows, _remainder) = fb_bytes.as_chunks::<BYTES_PER_ROW>();
-            // info!("all_rows.len(): {}", all_rows.len());
-            // info!("_remainder.len(): {}", _remainder.len());
-    
+            let (all_rows, _remainder) = fb_bytes.as_chunks::<BYTES_PER_ROW>();    
             let first_row = region.top_left.y as usize;
             let last_row = first_row + region.size.height as usize;
-            // info!("first_row: {}, last_row: {}", first_row, last_row);
-            // info!("fb_bytes.len(): {}", fb_bytes.len());
-    
-            // let mut buf: Vec<u8, esp_alloc::InternalMemory> = Vec::new_in(esp_alloc::InternalMemory);
             let desired_rows = &all_rows[first_row..last_row];
-            // info!("desired_rows.len(): {}", desired_rows.len());
-            // for row in desired_rows {
-            //     let sub_row = &row[region_row_start..region_row_end];
-            //     buf.extend_from_slice(sub_row);
-            // }
             
             self.d.show_raw_data(
                 0, 
@@ -868,6 +859,7 @@ fn create_dma_buffers() -> Result<(DmaRxBuf, DmaTxBuf), DisplayError> {
     Ok((dma_rx_buf, dma_tx_buf))
 }
 
+#[cfg(feature = "mipidsi")]
 fn create_di_buf<'d>() -> &'d mut [u8] {
     let disp_buf = DISPLAY_BUF.init_with(|| {
         let mut blah = Vec::<u8, esp_alloc::InternalMemory>::with_capacity_in(BUFLEN, esp_alloc::InternalMemory);

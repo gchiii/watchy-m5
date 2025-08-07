@@ -8,7 +8,8 @@ name = "watchy-m5"
 path = "./src/bin/main.rs"
 
 [features]
-default = ["lcdasync", "defmt"]
+default = ["lcdasync", "defmt", "second_core"]
+second_core = []
 mipidsi = []
 defmt = []
 lcdasync = []

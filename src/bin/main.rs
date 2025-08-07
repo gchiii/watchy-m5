@@ -182,21 +182,20 @@ async fn main(spawner: Spawner) {
     let buzzer = Buzzer::new(ledc, buzzer_pin, snd_rx);
 
     // TODO: Spawn some tasks
-    let rng = esp_hal::rng::Rng::new(peripherals.RNG);
-    // static WINDOW: StaticCell<CCanvas<Rgb565, 125, 142>> = StaticCell::new();
-    // let window = WINDOW.init_with(|| CCanvas::<Rgb565, 125, 142>::new());
+    #[cfg(feature = "second_core")] 
+    let mut cpu_control = CpuControl::new(peripherals.CPU_CTRL);
+    #[cfg(feature = "second_core")] 
+    let _guard = cpu_control
+        .start_app_core(unsafe { &mut *addr_of_mut!(APP_CORE_STACK) }, move || {
+            static EXECUTOR: StaticCell<Executor> = StaticCell::new();
+            let executor = EXECUTOR.init(Executor::new());
+            executor.run(|spawner| {
+                spawner.spawn(display_task(display_components, rng)).ok();
+            });
+        })
+        .unwrap();
 
-    // let mut cpu_control = CpuControl::new(peripherals.CPU_CTRL);
-    // let _guard = cpu_control
-    //     .start_app_core(unsafe { &mut *addr_of_mut!(APP_CORE_STACK) }, move || {
-    //         static EXECUTOR: StaticCell<Executor> = StaticCell::new();
-    //         let executor = EXECUTOR.init(Executor::new());
-    //         executor.run(|spawner| {
-    //             spawner.spawn(display_task(display_components, rng)).ok();
-    //         });
-    //     })
-    //     .unwrap();
-
+    #[cfg(not(feature = "second_core"))]
     if let Err(e) = spawner.spawn(display_task(display_components, rng)) {
         error!("unable to spawn display_task: {}", e);
     }

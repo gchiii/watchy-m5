@@ -3,6 +3,10 @@ runner = "espflash flash --monitor --chip esp32 --log-format defmt"
 
 [env]
 DEFMT_LOG="info"
+ESP_WIFI_CONFIG_STATIC_RX_BUF_NUM="5"
+ESP_WIFI_CONFIG_DYNAMIC_RX_BUF_NUM="16"
+ESP_WIFI_CONFIG_DYNAMIC_TX_BUF_NUM="16"
+ESP_WIFI_CONFIG_COUNTRY_CODE="US"
 
 [build]
 rustflags = [

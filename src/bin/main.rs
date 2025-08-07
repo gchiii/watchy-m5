@@ -4,6 +4,7 @@
 #![feature(where_clause_attrs)]
 
 use alloc::string::{String, ToString};
+use embassy_net::{Runner, StackResources, tcp::TcpSocket};
 use esp_alloc as _;
 extern crate alloc;
 
@@ -23,6 +24,26 @@ use esp_hal::{
 };
     
 use esp_hal_embassy::Executor;
+use bleps::{
+    ad_structure::{
+        AdStructure,
+        BR_EDR_NOT_SUPPORTED,
+        LE_GENERAL_DISCOVERABLE,
+        create_advertising_data,
+    },
+    async_attribute_server::AttributeServer,
+    asynch::Ble,
+    attribute_server::NotificationData,
+    gatt,
+};
+
+use esp_wifi::{
+    init,
+    EspWifiController,
+    ble::controller::BleConnector,
+    wifi::{ClientConfiguration, Configuration, WifiController, WifiDevice, WifiEvent, WifiState},
+};
+
 use lcd_async::raw_framebuf::RawFrameBuf;
 use mpu6886::Mpu6886;
 use pcf8563::Pcf8563;
@@ -43,7 +64,7 @@ use embassy_sync::
 
 use {esp_backtrace as _, esp_println as _};
 
-use core::{cell::RefCell, ptr::addr_of_mut, str::{from_utf8, from_utf8_unchecked}};
+use core::{cell::RefCell, net::Ipv4Addr, ptr::addr_of_mut, str::{from_utf8, from_utf8_unchecked}};
 use embedded_graphics::{
     geometry::AnchorX, mono_font::{ascii::{FONT_10X20, FONT_9X15}, iso_8859_1::FONT_5X7, MonoTextStyle}, pixelcolor::Rgb565, prelude::*, primitives::{Circle, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle, StrokeAlignment, StyledDrawable, Triangle}, text::{renderer::CharacterStyle, Text}
 };
@@ -74,6 +95,20 @@ async fn sound_task(mut buzzer: Buzzer<'static>) {
 
 
 esp_bootloader_esp_idf::esp_app_desc!();
+// const SSID: &str = "skynet";//env!("SSID");
+// const PASSWORD: &str = "thehuntingtons";//env!("PASSWORD");
+const SSID: &str = env!("SSID");
+const PASSWORD: &str = env!("PASSWORD");
+
+// When you are okay with using a nightly compiler it's better to use https://docs.rs/static_cell/2.1.0/static_cell/macro.make_static.html
+macro_rules! mk_static {
+    ($t:ty,$val:expr) => {{
+        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
+        #[deny(unused_attributes)]
+        let x = STATIC_CELL.uninit().write(($val));
+        x
+    }};
+}
 
 static mut APP_CORE_STACK: Stack<8192> = Stack::new();
 
@@ -84,12 +119,29 @@ async fn main(spawner: Spawner) {
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
 
-    esp_alloc::heap_allocator!(size: 64 * 1024);
+    esp_alloc::heap_allocator!(size: 32 * 1024);
     // COEX needs more RAM - so we've added some more
-    esp_alloc::heap_allocator!(#[unsafe(link_section = ".dram2_uninit")] size: 64 * 1024);
-    // esp_alloc::heap_allocator!(size: 72 * 1024);
+    esp_alloc::heap_allocator!(#[unsafe(link_section = ".dram2_uninit")] size: 72 * 1024);
     esp_alloc::psram_allocator!(peripherals.PSRAM, esp_hal::psram);
-    let stats: HeapStats = esp_alloc::HEAP.stats();
+    
+    let mut rng = esp_hal::rng::Rng::new(peripherals.RNG);
+    //WIFI    
+    // let timg0 = TimerGroup::new(peripherals.TIMG0);    
+    // let esp_wifi_ctrl = &*mk_static!(
+    //     EspWifiController<'static>,
+    //     init(timg0.timer0, rng.clone()).unwrap()
+    // );
+
+    // let mut bluetooth = peripherals.BT;
+    // let connector = BleConnector::new(&esp_wifi_ctrl, bluetooth.reborrow());
+
+    // let now = || esp_hal::time::Instant::now().duration_since_epoch().as_millis();
+    // let mut ble = Ble::new(connector, now);
+    // info!("Connector created");
+
+
+    // let (controller, interfaces) = esp_wifi::wifi::new(&esp_wifi_ctrl, peripherals.WIFI).unwrap();    
+    // let wifi_interface = interfaces.sta;
     
     let timg1 = TimerGroup::new(peripherals.TIMG1);
     // let timer0: AnyTimer = timg1.timer0.into();
@@ -97,6 +149,17 @@ async fn main(spawner: Spawner) {
     // esp_hal_embassy::init([timer0, timer1]);
     esp_hal_embassy::init(timg1.timer0);
     info!("Embassy initialized!");
+
+    let seed = (rng.random() as u64) << 32 | rng.random() as u64;
+    // let config = embassy_net::Config::dhcpv4(Default::default());
+    // // Init network stack
+    // let (stack, runner) = embassy_net::new(
+    //     wifi_interface,
+    //     config,
+    //     mk_static!(StackResources<3>, StackResources::<3>::new()),
+    //     seed,
+    // );
+
     
     static SND_CHANNEL: StaticCell<BuzzerChannel> = StaticCell::new();
     let snd_channel = &*SND_CHANNEL.init(Channel::new());
@@ -257,7 +320,30 @@ async fn main(spawner: Spawner) {
         error!("oops: {}", e);
     }
 
-    info!("{}", stats);
+    //WIFI
+    // spawner.spawn(connection(controller)).ok();
+    // spawner.spawn(net_task(runner)).ok();
+
+    // let mut rx_buffer = [0_u8; 4096];
+    // let mut tx_buffer = [0_u8; 4096];
+
+    // loop {
+    //     if stack.is_link_up() {
+    //         break;
+    //     }
+    //     Timer::after(Duration::from_millis(500)).await;
+    // }
+
+    // info!("Waiting to get IP address...");
+    // loop {
+    //     if let Some(config) = stack.config_v4() {
+    //         info!("Got IP: {}", config.address);
+    //         break;
+    //     }
+    //     Timer::after(Duration::from_millis(500)).await;
+    // }
+
+    info!("{}", esp_alloc::HEAP.stats());
     // let mut counter = 0;
     loop {
         // led.toggle();
@@ -274,8 +360,44 @@ async fn main(spawner: Spawner) {
                 }
             },
         }        
-        // info!("Hello world!");
         Timer::after(Duration::from_millis(1_000)).await;
+
+        // let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
+
+        // socket.set_timeout(Some(embassy_time::Duration::from_secs(10)));
+
+        // let remote_endpoint = (Ipv4Addr::new(142, 250, 185, 115), 80);
+        // info!("connecting...");
+        // let r = socket.connect(remote_endpoint).await;
+        // if let Err(e) = r {
+        //     info!("connect error: {:?}", e);
+        //     continue;
+        // }
+        // info!("connected!");
+        // let mut buf = [0; 1024];
+        // loop {
+        //     use embedded_io_async::Write;
+        //     let r = socket
+        //         .write_all(b"GET / HTTP/1.0\r\nHost: www.mobile-j.de\r\n\r\n")
+        //         .await;
+        //     if let Err(e) = r {
+        //         info!("write error: {:?}", e);
+        //         break;
+        //     }
+        //     let n = match socket.read(&mut buf).await {
+        //         Ok(0) => {
+        //             info!("read EOF");
+        //             break;
+        //         }
+        //         Ok(n) => n,
+        //         Err(e) => {
+        //             info!("read error: {:?}", e);
+        //             break;
+        //         }
+        //     };
+        //     info!("{}", core::str::from_utf8(&buf[..n]).unwrap());
+        // }
+        // Timer::after(Duration::from_millis(3000)).await;
 
     }
 
@@ -304,6 +426,22 @@ async fn display_task(components: DisplayComponents<'static>, esp_rng: esp_hal::
     }
 }
 
+pub trait FractionaScale {
+    fn fractional_scale(&self, numerator: Self, denominator: Self) -> Self;
+}
+
+impl FractionaScale for Point {
+    fn fractional_scale(&self, numerator: Self, denominator: Self) -> Self {
+        self.component_mul(numerator).component_div(denominator)
+    }
+}
+
+impl FractionaScale for Size {
+    fn fractional_scale(&self, numerator: Self, denominator: Self) -> Self {
+        self.component_mul(numerator).component_div(denominator)
+    }
+}
+
 async fn render_worker(mut display: impl DrawTarget<Color = Rgb565, Error = DisplayError> + Backlight + DrawAsync, mut esp_rng: esp_hal::rng::Rng) -> Result<(), DisplayError> {
     // let mut display_buffer = StickDisplayBuffer::create();
     // let mut fb_display = display_buffer.get_framebuffer();
@@ -319,13 +457,13 @@ async fn render_worker(mut display: impl DrawTarget<Color = Rgb565, Error = Disp
 
     let full_screen = Rectangle::new(Point::zero(), Size::new(WIDTH as u32, HEIGHT as u32));
     let bottom_right = full_screen.bottom_right().unwrap_or_default();
-    let y_one_third = bottom_right.y_axis().component_div(Point::new(1, 3));
+    let y_one_third = bottom_right.y_axis().fractional_scale(Point::new(1, 1), Point::new(1, 3));
 
     // let width = full_screen.size.width as i32; // 135
     // let height = full_screen.size.height as i32; //240;
 
 
-    let bottom_two_thirds_size = full_screen.size.component_mul(Size::new(1, 2)).component_div(Size::new(1, 3));
+    let bottom_two_thirds_size = full_screen.size.fractional_scale(Size::new(1, 2), Size::new(1, 3));
     let bottom_two_thirds = Rectangle::new(y_one_third, bottom_two_thirds_size);
     
 
@@ -337,7 +475,8 @@ async fn render_worker(mut display: impl DrawTarget<Color = Rgb565, Error = Disp
     let mut info_window = {
         let font = &embedded_graphics::mono_font::iso_8859_1::FONT_5X8;//&FONT_5X7;
         let text_color = Rgb565::YELLOW;
-        let cs = U8g2TextStyle::new(u8g2_font_6x12_m_symbols, text_color);
+        let cs = MonoTextStyle::new(font, text_color);
+        // let cs = U8g2TextStyle::new(u8g2_font_6x12_m_symbols, text_color);
         let text = "Test 123, Blah blah blah blah!";
         let textbox_style = TextBoxStyleBuilder::new()
             .height_mode(HeightMode::Exact(embedded_text::style::VerticalOverdraw::Visible))
@@ -346,7 +485,7 @@ async fn render_worker(mut display: impl DrawTarget<Color = Rgb565, Error = Disp
             // .paragraph_spacing(2)
             .build();
         let tl = full_screen.top_left + Point::new(1, 1);
-        let size = full_screen.size.component_mul(Size::new(1, 4)).component_div(Size::new(1, 10));
+        let size = full_screen.size.fractional_scale(Size::new(1, 4),Size::new(1, 10));
         TextWindow::new(tl, size, cs.into())
             .with_border_style(PrimitiveStyle::with_stroke(Rgb565::BLACK, 4))
             .with_background_color(Rgb565::BLACK)
@@ -366,11 +505,11 @@ async fn render_worker(mut display: impl DrawTarget<Color = Rgb565, Error = Disp
 
     let r = Rectangle::with_corners(
         // y_one_third, 
-        bottom_right.y_axis().component_mul(Point::new(1, 4)).component_div(Point::new(1, 10)),
+        bottom_right.y_axis().fractional_scale(Point::new(1, 4),Point::new(1, 10)),
         half_screen.anchor_point(embedded_graphics::geometry::AnchorPoint::BottomRight));
     info!("r: {}", r);
-    // let mut character_style = MonoTextStyle::new(&embedded_graphics::mono_font::ascii::FONT_9X15, Rgb565::BLUE);
-    let mut character_style = U8g2TextStyle::new(u8g2_font_6x12_m_symbols, Rgb565::BLUE);
+    let mut character_style = MonoTextStyle::new(&embedded_graphics::mono_font::ascii::FONT_9X15, Rgb565::BLUE);
+    // let mut character_style = U8g2TextStyle::new(u8g2_font_6x12_m_symbols, Rgb565::BLUE);
     character_style.set_background_color(Some(Rgb565::BLACK));
 
     let mut marquee = {        
@@ -532,182 +671,53 @@ async fn render_worker(mut display: impl DrawTarget<Color = Rgb565, Error = Disp
 
 
 
-// static FB_DATA: StaticCell<Vec<Rgb565, esp_alloc::InternalMemory>> = StaticCell::new();
 
-// async fn display_task_worker<SBus: embedded_hal::spi::SpiBus>(mut display: StickDisplayT<'_, SBus>, mut esp_rng: esp_hal::rng::Rng) -> Result<(), DisplayError>{
-
-//     // Alternating color
-//     let colors = [Rgb565::RED, Rgb565::GREEN, Rgb565::BLUE];
-//     // Create styles used by the drawing operations.
-//     let thin_stroke = PrimitiveStyle::with_stroke(Rgb565::BLACK, 1);
-//     let thick_stroke = PrimitiveStyle::with_stroke(Rgb565::BLACK, 3);
-//     // let border_stroke = PrimitiveStyleBuilder::new()
-//     //     .stroke_color(Rgb565::BLACK)
-//     //     .stroke_width(3)
-//     //     .stroke_alignment(StrokeAlignment::Inside)
-//     //     .build();
-//     let ball_bound_sb = PrimitiveStyleBuilder::new()
-//         .stroke_color(Rgb565::BLACK)
-//         .stroke_width(3)
-//         .stroke_alignment(StrokeAlignment::Inside)
-//         .fill_color(Rgb565::CYAN);
-//     let fill = PrimitiveStyle::with_fill(Rgb565::CYAN);
-
-//     let display_area = display.bounding_box().into_styled(thin_stroke);
-
-//     let text_box = {
-//         let text = "Blah blah blah blah!";
-//         let character_style = MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE);
-//         let textbox_style = TextBoxStyleBuilder::new()
-//             .height_mode(HeightMode::FitToText)
-//             .alignment(HorizontalAlignment::Justified)
-//             .paragraph_spacing(6)
-//             .build();
-//         let tl = display_area.bounding_box().top_left + Point::new(3, 3);
-//         let bounds = Rectangle::new(tl, Size::new((display.bounding_box().size.width * 2)/3, 0));
-//         let mut t = TextBox::with_textbox_style(text, bounds, character_style, textbox_style);
-//         let outline = t.bounding_box().offset(3).into_styled(thick_stroke);
-//         t.align_to_mut(&outline, horizontal::Center, vertical::Center);
-//         Chain::new(outline)
-//             .append(t)
-//             .align_to(&display.bounding_box(), horizontal::Center, vertical::Top)
-//     };
-//     let mut hello_box = {
-//         let text_x: i32 = WIDTH as i32;
-//         let text_y: i32 = (HEIGHT / 2) as i32;
-//         let text = "Hello World ^_^;";
-//         let text_style = MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE);
-//         let bounds = Text::new(text, Point::new(text_x, text_y), text_style)
-//             .bounding_box()
-//             .offset(3);
-//         let textbox_style = TextBoxStyleBuilder::new()
-//             .height_mode(HeightMode::FitToText)            
-//             .alignment(HorizontalAlignment::Justified)
-//             .paragraph_spacing(6)
-//             .build();
-//         TextBox::with_textbox_style(text, bounds, text_style, textbox_style)
-//     };
-
-//     display.on();
-    
-//     hello_box.align_to_mut(&text_box, horizontal::NoAlignment, vertical::TopToBottom);
-
-//     let bb_tl = Point::new(0,88);
-//     let bb_size = Size::new(135, 152);
-//     // let bounce_box = Rectangle::new(bb_tl, bb_size);
-//     let bounce_box = Rectangle::new(Point::zero(), bb_size);
-
-
-//     let sub_window_r = Rectangle::with_corners(display.bounding_box().top_left, bb_tl + Point::new(bb_size.width as i32, 0));
-//     info!("bounce_box: {:?}", bounce_box);
-
-//     let circle = Circle::with_center(bounce_box.bounding_box().center(), 15);
-//     let mut ball = Sprite::<Rgb565>::new("ball1", circle.translate(Point { x: 30, y: 25 }))
-//         .with_style(PrimitiveStyle::with_fill(Rgb565::YELLOW))
-//         .with_line_style(PrimitiveStyle::with_stroke(Rgb565::BLACK, 1));
-    
-//     let mut ball2 = Sprite::<Rgb565>::new("ball2", circle.translate(Point { x: -30, y: -25 }))
-//         .with_style(PrimitiveStyle::with_fill(Rgb565::MAGENTA))
-//         .with_line_style(thin_stroke);
-
-
-//     let mut fun_rng = rand::rngs::SmallRng::from_rng(&mut esp_rng);
-
-//     ball.set_direction_from_angle(Angle::from_degrees(fun_rng.random_range(0..360) as f32));
-//     ball2.set_direction_from_angle(Angle::from_degrees(fun_rng.random_range(0..360) as f32));
-//     let mut sprite_container = SpriteContainer::<Rgb565, 10>::new(bounce_box);
-//     let _ = sprite_container.add_sprite(ball);
-//     let _ = sprite_container.add_sprite(ball2);
-//     // let stationary_shape = Rectangle::with_center(bounce_box.bounding_box().center(), Size::new_equal(25));
-//     let stationary_shape = Circle::with_center(bounce_box.bounding_box().center(), 25);
-//     let stationary = Sprite::new("stationary", stationary_shape)
-//         .with_style(fill)
-//         .with_line_style(thick_stroke);
-//     let _ = sprite_container.add_sprite(stationary);
-//     {
-//         let t_vertex1 = stationary_shape.top_left + Point::new(-40, -30);
-//         let mut blah = Sprite::new("circle", Circle::with_center(t_vertex1, 25))
-//             .with_style(PrimitiveStyle::with_fill(Rgb565::MAGENTA))
-//             .with_line_style(thick_stroke);
-//         blah.set_direction_from_angle(Angle::from_degrees(fun_rng.random_range(0..360) as f32));
-//         let _ = sprite_container.add_sprite(blah);
-//     }
-//     {
-//         let t_vertex1 = stationary_shape.top_left + Point::new(-40, -30);
-//         let t_v2 = t_vertex1 + Point::new(-10, -25);
-//         let t_v3 = t_vertex1 + Point::new(10, -25);
-//         let mut blah = Sprite::new("triangle", Triangle::new(t_vertex1, t_v2, t_v3))
-//             .with_style(PrimitiveStyle::with_fill(Rgb565::MAGENTA))
-//             .with_line_style(thick_stroke);
-//         blah.set_direction_from_angle(Angle::from_degrees(fun_rng.random_range(0..360) as f32));
-//         let _ = sprite_container.add_sprite(blah);
-//     }
-
-//     let mut counter = 0;
-//     let mut last_hello_tick = Instant::now();
-//     let mut last_bounce_tick = Instant::now();
-//     let mut bb_style: PrimitiveStyle<Rgb565> = ball_bound_sb.build();
-//     let bb_width = bb_size.width as usize;
-//     let bb_height = bb_size.height as usize;
-//     let mut fb_data = StickFrameBuf::create_vec( bb_width, bb_height);
-//     let fun = StickFrameBuf::new(fb_data.as_mut_slice());
-//     // let mut fb = FrameBuf::new_with_origin(fun, bb_width, bb_height, bb_tl);
-//     let mut fb = FrameBuf::new(fun, bb_width, bb_height);
-
+// #[embassy_executor::task]
+// async fn connection(mut controller: WifiController<'static>) {
+//     info!("start connection task");
+//     info!("Device capabilities: {:?}", controller.capabilities());
 //     loop {
-        
-//         let bg_color = colors[(counter / 8) % colors.len()];
-//         if last_bounce_tick.elapsed() >= Duration::from_millis(50) {
-//             // let window_r = bounce_box;
-            
-//             let now = Instant::now();
-//             last_bounce_tick = now;
-//             sprite_container.update_positions();
-//             {
-//                 // fb.clear(bg_color)?;
-//                 let bounce_box = bounce_box.into_styled(bb_style);
-//                 bounce_box.draw(&mut fb)?;    
-//                 // sprite_container.set_bg_color(Some(bg_color));
-//                 sprite_container.draw(&mut fb)?;
+//         match esp_wifi::wifi::wifi_state() {
+//             WifiState::StaConnected => {
+//                 // wait until we're no longer connected
+//                 controller.wait_for_event(WifiEvent::StaDisconnected).await;
+//                 Timer::after(Duration::from_millis(5000)).await
 //             }
-            
-//             let fb_iter = fb.data.0.iter().copied();
-//             let r = Rectangle::new(bb_tl, fb.size());
-//             display.fill_contiguous(&r, fb_iter)?;
-//             {
-//                 let elapsed = now.elapsed();
-//                 if elapsed.as_ticks() > 300 { info!("update_position plus draw took {}", elapsed); }
+//             _ => {}
+//         }
+//         if !matches!(controller.is_started(), Ok(true)) {
+//             let client_config = Configuration::Client(ClientConfiguration {
+//                 ssid: SSID.into(),
+//                 password: PASSWORD.into(),
+//                 ..Default::default()
+//             });
+//             controller.set_configuration(&client_config).unwrap();
+//             info!("Starting wifi");
+//             controller.start_async().await.unwrap();
+//             info!("Wifi started!");
+
+//             info!("Scan");
+//             let result = controller.scan_n_async(10).await.unwrap();
+//             for ap in result {
+//                 info!("{:?}", ap);
 //             }
 //         }
-        
-//         if last_hello_tick.elapsed() >= Duration::from_secs(1) {
-//             counter += 1;
-//             let mut sub_window = display.clipped(&sub_window_r);
-//             // Fill the display with alternating colors every 8 frames
-//             sub_window.clear(bg_color)?;
-//             bb_style = ball_bound_sb.fill_color(bg_color).build();
-//             // Draw text
-//             if let Err(_e) = hello_box.draw(&mut sub_window) {
-//                 error!("unable to draw hello_box.");
+//         info!("About to connect...");
+
+//         match controller.connect_async().await {
+//             Ok(_) => info!("Wifi connected!"),
+//             Err(e) => {
+//                 info!("Failed to connect to wifi: {:?}",e);
+//                 Timer::after(Duration::from_millis(5000)).await
 //             }
-
-//             let translation = {
-//                 if hello_box.bounds.anchor_x(AnchorX::Right) <= 0 {
-//                     Point::new(WIDTH as i32, 0)
-//                 } else {
-//                     Point::new(-10, 0)
-//                 }
-//             };
-//             embedded_graphics::prelude::Transform::translate_mut(&mut hello_box, translation);
-//             last_hello_tick = Instant::now();
-//             text_box.draw(&mut sub_window)?;
-//             // info!("{}", esp_alloc::HEAP.stats());
 //         }
-
-//         Timer::after(Duration::from_millis(50)).await;
 //     }
 // }
 
+// #[embassy_executor::task]
+// async fn net_task(mut runner: Runner<'static, WifiDevice<'static>>) {
+//     runner.run().await
+// }
 
 
 

@@ -17,6 +17,7 @@ use embedded_hal_bus::i2c::RefCellDevice;
 use embedded_layout::{align::{horizontal, vertical, Align}, prelude::Chain, View};
 use embedded_physics::sprites::{Sprite, SpriteContainer};
 use esp_alloc::HeapStats;
+use esp_bootloader_esp_idf::partitions::DataPartitionSubType;
 use esp_hal::{
     clock::CpuClock, gpio::{Input, InputConfig, Io, Level, Output, OutputConfig}, handler, i2c::master::{BusTimeout, Config as I2cConfig, I2c}, ledc::Ledc, ram, system::{CpuControl, Stack}, time::Rate, timer::timg::TimerGroup
 };
@@ -100,14 +101,38 @@ async fn main(spawner: Spawner) {
     static SND_CHANNEL: StaticCell<BuzzerChannel> = StaticCell::new();
     let snd_channel = &*SND_CHANNEL.init(Channel::new());
     
+    {
+        let mut storage = esp_storage::FlashStorage::new();
+    
+        let mut buffer = [0u8; esp_bootloader_esp_idf::partitions::PARTITION_TABLE_MAX_LEN];
+        let pt = esp_bootloader_esp_idf::partitions::read_partition_table(&mut storage, &mut buffer)
+            .unwrap();
+    
+        // List all partitions - this is just FYI
+        for i in 0..pt.len() {
+            info!("{:?}", pt.get_partition(i));
+        }
+        // Find the OTA-data partition and show the currently active partition
+        let ota_part = pt
+            .find_partition(esp_bootloader_esp_idf::partitions::PartitionType::Data(
+                DataPartitionSubType::Ota,
+            ))
+            .unwrap()
+            .unwrap();
+        let mut ota_part = ota_part.as_embedded_storage(&mut storage);
+        info!("Found ota data");
 
-    // let timer1 = TimerGroup::new(peripherals.TIMG0);
-    // let _init = esp_wifi::init(
-    //     timer1.timer0,
-    //     esp_hal::rng::Rng::new(peripherals.RNG),
-    //     peripherals.RADIO_CLK,
-    // )
-    // .unwrap();
+        let mut ota = esp_bootloader_esp_idf::ota::Ota::new(&mut ota_part).unwrap();
+        let current = ota.current_slot().unwrap();
+        info!(
+            "current image state {:?} (only relevant if the bootloader was built with auto-rollback support)",
+            ota.current_ota_state()
+        );
+        info!("current {:?} - next {:?}", current, current.next());
+
+    }
+
+
 
     let mut io = Io::new(peripherals.IO_MUX);
     // Set the interrupt handler for GPIO interrupts.

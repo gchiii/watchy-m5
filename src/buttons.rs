@@ -83,6 +83,12 @@ pub type ButtonSubscriber<'a> = embassy_sync::pubsub::Subscriber<'a, CriticalSec
 pub type ButtonDynSubscriber<'a> = embassy_sync::pubsub::DynSubscriber<'a, RawButtonEvent>;
 
 
+/// Represents a physical input button and its associated metadata.
+///
+/// `InputButton` wraps an [`Input`] pin and a name for identification. It provides
+/// methods to access the pin, check for interrupts, and (optionally) handle GPIO interrupts.
+/// This struct is used to abstract the hardware button and provide a consistent interface
+/// for button event handling.
 pub struct InputButton<'a> { 
     input: Input<'a>, 
     name: &'a str,
@@ -139,7 +145,6 @@ impl<'a> InputButton<'a> {
     /// # Returns
     /// The corresponding [`RawButtonEvent`] (`Down` or `Up`).
     #[cfg(feature = "gpio_interrupt")]
-    #[ram]
     pub fn interrupt_event(&mut self, ts: Instant) -> RawButtonEvent {
         self.input().clear_interrupt();
         match self.input().level() {
@@ -158,7 +163,7 @@ impl<'a> InputButton<'a> {
     ///
     /// # Returns
     /// The next [`RawButtonEvent`] (`Down` or `Up`).
-    pub async fn event(&mut self) -> RawButtonEvent {
+    async fn event(&mut self) -> RawButtonEvent {
         match self.input.level() {
             Level::Low => {
                 self.input.wait_for_rising_edge().await;
@@ -223,7 +228,14 @@ impl<'a> ButtonReader<'a> {
         self.name
     }
 
-    
+    /// Waits asynchronously for the next raw button event.
+    ///
+    /// In interrupt mode (`gpio_interrupt` feature), this method waits for the next
+    /// message from the button event subscriber and returns it. In polling mode,
+    /// it waits for the next hardware event from the associated `InputButton`.
+    ///
+    /// # Returns
+    /// The next [`RawButtonEvent`] (`Down` or `Up`).
     async fn next_raw_event(&mut self) -> RawButtonEvent {
         #[cfg(feature = "gpio_interrupt")]
         loop {
@@ -272,6 +284,20 @@ impl<'a> ButtonReader<'a> {
         self.debounce_logic(raw_event)
     }
 
+    /// Processes a raw button event and determines if it constitutes a logical button event.
+    ///
+    /// This function compares the current raw event with the previous event. If the previous event
+    /// was a `Down` and the current event is an `Up`, it calculates the elapsed time between them.
+    /// If the elapsed time is greater than or equal to `LONG_PRESS_DURATION`, it returns `Some(ButtonEvent::Long)`.
+    /// Otherwise, it returns `Some(ButtonEvent::Short)`. If the event sequence does not match a
+    /// complete press (i.e., not a `Down` followed by an `Up`), or if there is no previous event,
+    /// it returns `None`.
+    ///
+    /// # Arguments
+    /// * `raw_event` - The new raw button event to process.
+    ///
+    /// # Returns
+    /// An `Option<ButtonEvent>` indicating a detected logical button event, or `None` if not applicable.
     fn cook_raw_event(&mut self, raw_event: RawButtonEvent) -> Option<ButtonEvent> {
         let cooked = match self.previous_event {
             Some(previous_raw) => {
@@ -314,6 +340,17 @@ impl<'a> ButtonReader<'a> {
     }
 }
 
+/// A collection of `ButtonReader` instances for multiple buttons.
+///
+/// `ButtonReaderCollection` groups together readers for three buttons (A, B, and C),
+/// allowing unified asynchronous polling for button events. This is useful for
+/// applications that want to handle multiple buttons in a coordinated way, such as
+/// waiting for any button to be pressed and reporting which one.
+///
+/// # Fields
+/// - `a`: The `ButtonReader` for button A.
+/// - `b`: The `ButtonReader` for button B.
+/// - `c`: The `ButtonReader` for button C.
 pub struct ButtonReaderCollection<'a> {
     pub a: ButtonReader<'a>,
     pub b: ButtonReader<'a>,
@@ -321,10 +358,27 @@ pub struct ButtonReaderCollection<'a> {
 }
 
 impl<'a> ButtonReaderCollection<'a> {
+    /// Creates a new `ButtonReaderCollection` from three `ButtonReader` instances.
+    ///
+    /// # Arguments
+    /// * `a` - The `ButtonReader` for button A.
+    /// * `b` - The `ButtonReader` for button B.
+    /// * `c` - The `ButtonReader` for button C.
+    ///
+    /// # Returns
+    /// A new `ButtonReaderCollection` containing the provided readers.
     pub fn new(a: ButtonReader<'a>, b: ButtonReader<'a>, c: ButtonReader<'a>) -> Self {
         Self { a, b, c }
     }
 
+    /// Waits asynchronously for the next logical button event from any button.
+    ///
+    /// This method concurrently waits for a logical event (`Short` or `Long` press)
+    /// from any of the three buttons, and returns an `InputEvent` indicating which
+    /// button was pressed and the type of event.
+    ///
+    /// # Returns
+    /// An `InputEvent` representing the next logical event from any button.
     pub async fn button_events(&mut self) -> InputEvent {
         let a_events = self.a.get_button_event();
         let b_events = self.b.get_button_event();

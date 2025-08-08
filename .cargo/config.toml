@@ -1,7 +1,8 @@
 [target.xtensa-esp32-none-elf]
-runner = "espflash flash --monitor --chip esp32 --log-format defmt"
+runner = "espflash flash --monitor --chip esp32 --log-format defmt --partition-table partitions.csv "
 
 [env]
+ESPFLASH_PARTITION_TABLE="partitions.csv"
 DEFMT_LOG="info"
 ESP_WIFI_CONFIG_STATIC_RX_BUF_NUM="5"
 ESP_WIFI_CONFIG_DYNAMIC_RX_BUF_NUM="16"

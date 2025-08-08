@@ -166,23 +166,23 @@ async fn main(spawner: Spawner) {
         for i in 0..pt.len() {
             info!("{:?}", pt.get_partition(i));
         }
-        // // Find the OTA-data partition and show the currently active partition
-        // let ota_part = pt
-        //     .find_partition(esp_bootloader_esp_idf::partitions::PartitionType::Data(
-        //         DataPartitionSubType::Ota,
-        //     ))
-        //     .unwrap()
-        //     .unwrap();
-        // let mut ota_part = ota_part.as_embedded_storage(&mut storage);
-        // info!("Found ota data");
+        // Find the OTA-data partition and show the currently active partition
+        let ota_part = pt
+            .find_partition(esp_bootloader_esp_idf::partitions::PartitionType::Data(
+                DataPartitionSubType::Ota,
+            ))
+            .unwrap()
+            .unwrap();
+        let mut ota_part = ota_part.as_embedded_storage(&mut storage);
+        info!("Found ota data");
 
-        // let mut ota = esp_bootloader_esp_idf::ota::Ota::new(&mut ota_part).unwrap();
-        // let current = ota.current_slot().unwrap();
-        // info!(
-        //     "current image state {:?} (only relevant if the bootloader was built with auto-rollback support)",
-        //     ota.current_ota_state()
-        // );
-        // info!("current {:?} - next {:?}", current, current.next());
+        let mut ota = esp_bootloader_esp_idf::ota::Ota::new(&mut ota_part).unwrap();
+        let current = ota.current_slot().unwrap();
+        info!(
+            "current image state {:?} (only relevant if the bootloader was built with auto-rollback support)",
+            ota.current_ota_state()
+        );
+        info!("current {:?} - next {:?}", current, current.next());
 
     }
 

@@ -8,11 +8,12 @@ name = "watchy-m5"
 path = "./src/bin/main.rs"
 
 [features]
-default = ["lcdasync", "defmt", "second_core"]
+default = ["lcdasync", "defmt", "second_core", "gpio_interrupt"]
 second_core = []
 mipidsi = []
 defmt = []
 lcdasync = []
+gpio_interrupt = []
 
 [dependencies]
 defmt = { version = "1.0.1", features = ["alloc"] }

@@ -8,7 +8,8 @@ use embassy_sync::{blocking_mutex::CriticalSectionMutex, pubsub::WaitResult};
 
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, pubsub::PubSubChannel};
 use embassy_time::{Duration, Instant};
-use esp_hal::gpio::{Event, Input, Level};
+use esp_hal::{gpio::{AnyPin, Event, Input, InputConfig, InputPin, Level, Pull}, handler};
+use esp_hal::gpio::Io;
 use esp_hal::ram;
 use thiserror_no_std::Error;
 
@@ -77,30 +78,34 @@ pub type ButtonSubscriber<'a> = embassy_sync::pubsub::Subscriber<'a, CriticalSec
 pub type ButtonDynSubscriber<'a> = embassy_sync::pubsub::DynSubscriber<'a, RawButtonEvent>;
 
 
-pub struct InputButton<'a>(Input<'a>, &'a str);
+pub struct InputButton<'a> { 
+    input: Input<'a>, 
+    name: &'a str,
+}
 
 impl<'a> InputButton<'a> {
     #[must_use]
     pub const fn new(button: Input<'a>, name: &'a str) -> Self {
-        Self(button, name)
+        Self { input: button, name }
     }
 
     #[inline]
     pub const fn name(&self) -> &'a str {
-        self.1
+        self.name
     }
 
     #[inline]
     pub fn input(&mut self) -> &mut Input<'a> {
-        &mut self.0
+        &mut self.input
     }
 
     #[inline]
     pub fn is_interrupt_set(self) -> bool {
-        self.0.is_interrupt_set()        
+        self.input.is_interrupt_set()        
     }
 
-    pub fn handle(&mut self, ts: Instant) -> RawButtonEvent {
+    #[cfg(feature = "gpio_interrupt")]
+    pub fn interrupt_event(&mut self, ts: Instant) -> RawButtonEvent {
         self.input().clear_interrupt();
         match self.input().level() {
             Level::Low => {
@@ -256,6 +261,7 @@ impl<'a> ButtonInputCollection<'a> {
         )
     }
 
+    #[cfg(feature = "gpio_interrupt")]
     #[ram]
     pub fn interrupt_handler(&mut self) {
         let a = self.a.input();
@@ -265,18 +271,18 @@ impl<'a> ButtonInputCollection<'a> {
         let ts = embassy_time::Instant::now();
         
         if a.is_interrupt_set() {
-            let event = self.a.handle(ts);
+            let event = self.a.interrupt_event(ts);
             self.a_pub.publish_immediate(event);
             trace!("Button A");
             info!("{}", esp_alloc::HEAP.stats());
         }
         if b.is_interrupt_set() {
-            let event = self.b.handle(ts);
+            let event = self.b.interrupt_event(ts);
             self.b_pub.publish_immediate(event);
             trace!("Button B");
         }
         if c.is_interrupt_set() {
-            let event = self.c.handle(ts);
+            let event = self.c.interrupt_event(ts);
             self.c_pub.publish_immediate(event);
             trace!("Button C");
         }
@@ -304,3 +310,87 @@ pub fn initialize_buttons(button_a: Input<'static>, button_b: Input<'static>, bu
     Ok(btn_readers)
 }
 
+pub struct ButtonComponents {
+    pub a: Input<'static>,
+    pub b: Input<'static>,
+    pub c: Input<'static>,
+    pub io: Option<Io<'static>>,
+}
+
+impl ButtonComponents {
+    pub fn new(a_pin: impl InputPin + 'static, b_pin: impl InputPin + 'static, c_pin: impl InputPin + 'static) -> Self {
+        let config = InputConfig::default().with_pull(Pull::Up);
+        Self {
+            a: Input::new(a_pin, config),
+            b: Input::new(b_pin, config),
+            c: Input::new(c_pin, config),
+            io: None,        
+        }
+    }
+
+    pub fn with_interrupts(self, io: Io<'static>) -> Self {
+        Self {
+            io: Some(io),
+            ..self
+        }
+    }
+
+    pub fn build(self) -> Result<ButtonReaderCollection<'static>, ButtonError> {
+        let button_a = self.a;
+        let button_b = self.b;
+        let button_c = self.c;
+
+        let btn_inputs = ButtonInputCollection::new(button_a, button_b, button_c)?;
+
+        let a_sub = A_CHAN.subscriber()?;
+        let btn_reader_a = ButtonReader::new(a_sub, "btn_a");
+        let b_sub = B_CHAN.subscriber()?;
+        let btn_reader_b = ButtonReader::new(b_sub, "btn_b");
+        let c_sub = C_CHAN.subscriber()?;
+        let btn_reader_c = ButtonReader::new(c_sub, "btn_c");
+
+
+        let btn_readers: ButtonReaderCollection<'static> = ButtonReaderCollection::new(btn_reader_a, btn_reader_b, btn_reader_c);
+
+        critical_section::with(|cs| {
+            INPUT_BUTTONS.borrow(cs).replace(Some(btn_inputs));
+        });
+
+        if let Some(mut io) = self.io {
+            // Set the interrupt handler for GPIO interrupts.
+            io.set_interrupt_handler(gpio_interrupt_handler);
+        }
+        Ok(btn_readers)
+    }
+}
+
+#[handler]
+#[ram]
+fn gpio_interrupt_handler() {
+    critical_section::with(|cs| {
+        info!("GPIO interrupt");
+        if let Some(all_buttons) = INPUT_BUTTONS.borrow(cs).borrow_mut().as_mut() {
+            all_buttons.interrupt_handler();
+        }
+    });
+}
+
+
+// #[embassy_executor::task]
+// async fn press_button(mut button: AnyPin<'static>) {
+//     loop {
+//       // Wait for Button Press
+//       button.wait_for_rising_edge().await.unwrap();
+//       esp_println:: println!("Button Pressed!");
+//       // Retrieve Delay Global Variable
+//       let del = BLINK_DELAY.load(Ordering::Relaxed);
+//       // Adjust Delay Accordingly
+//       if del <= 50_u32 {
+//         BLINK_DELAY.store(200_u32,Ordering::Relaxed);
+//         esp_println:: println!("Delay is now 200ms");
+//       } else {
+//         BLINK_DELAY.store(del - 50_u32,Ordering::Relaxed);
+//         esp_println:: println!("Delay is now {}ms", del - 50_u32);
+//       } 
+//     }
+// }

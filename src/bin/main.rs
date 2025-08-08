@@ -51,7 +51,7 @@ use pcf8563::Pcf8563;
 use rand::{Rng, SeedableRng};
 use static_cell::StaticCell;
 use u8g2_fonts::{fonts::{u8g2_font_6x12_m_symbols, u8g2_font_6x12_t_symbols}, FontRenderer, U8g2TextStyle};
-use watchy_m5::{buttons::{btn_task, initialize_buttons, INPUT_BUTTONS}, display::{byte_slice_to_pixels, Backlight, DisplayBuilder, DisplayComponents, DisplayError, DrawAsync, StickDisplayT, StickExtraFrameBuf, StickFrameBuf, StickRawFrameBuf}, display_buf::StickDisplayBuffer, widgets::{MyCharacterStyle, ScrollingMarquee, StyleableTextWindow, TextWindow}};
+use watchy_m5::{buttons::{btn_task, initialize_buttons, ButtonComponents, INPUT_BUTTONS}, display::{byte_slice_to_pixels, Backlight, DisplayBuilder, DisplayComponents, DisplayError, DrawAsync, StickDisplayT, StickDrawTarget, StickExtraFrameBuf, StickFrameBuf, StickRawFrameBuf}, display_buf::StickDisplayBuffer, widgets::{MyCharacterStyle, ScrollingMarquee, StyleableTextWindow, TextWindow}};
 use watchy_m5::display::{HEIGHT, WIDTH};
 use watchy_m5::buzzer::{Buzzer, BuzzerChannel, BuzzerState};
 use watchy_m5::music::Song;
@@ -95,20 +95,7 @@ async fn sound_task(mut buzzer: Buzzer<'static>) {
 
 
 esp_bootloader_esp_idf::esp_app_desc!();
-// const SSID: &str = "skynet";//env!("SSID");
-// const PASSWORD: &str = "thehuntingtons";//env!("PASSWORD");
-const SSID: &str = env!("SSID");
-const PASSWORD: &str = env!("PASSWORD");
 
-// When you are okay with using a nightly compiler it's better to use https://docs.rs/static_cell/2.1.0/static_cell/macro.make_static.html
-macro_rules! mk_static {
-    ($t:ty,$val:expr) => {{
-        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
-        #[deny(unused_attributes)]
-        let x = STATIC_CELL.uninit().write(($val));
-        x
-    }};
-}
 
 static mut APP_CORE_STACK: Stack<8192> = Stack::new();
 
@@ -175,31 +162,31 @@ async fn main(spawner: Spawner) {
         for i in 0..pt.len() {
             info!("{:?}", pt.get_partition(i));
         }
-        // Find the OTA-data partition and show the currently active partition
-        let ota_part = pt
-            .find_partition(esp_bootloader_esp_idf::partitions::PartitionType::Data(
-                DataPartitionSubType::Ota,
-            ))
-            .unwrap()
-            .unwrap();
-        let mut ota_part = ota_part.as_embedded_storage(&mut storage);
-        info!("Found ota data");
+        // // Find the OTA-data partition and show the currently active partition
+        // let ota_part = pt
+        //     .find_partition(esp_bootloader_esp_idf::partitions::PartitionType::Data(
+        //         DataPartitionSubType::Ota,
+        //     ))
+        //     .unwrap()
+        //     .unwrap();
+        // let mut ota_part = ota_part.as_embedded_storage(&mut storage);
+        // info!("Found ota data");
 
-        let mut ota = esp_bootloader_esp_idf::ota::Ota::new(&mut ota_part).unwrap();
-        let current = ota.current_slot().unwrap();
-        info!(
-            "current image state {:?} (only relevant if the bootloader was built with auto-rollback support)",
-            ota.current_ota_state()
-        );
-        info!("current {:?} - next {:?}", current, current.next());
+        // let mut ota = esp_bootloader_esp_idf::ota::Ota::new(&mut ota_part).unwrap();
+        // let current = ota.current_slot().unwrap();
+        // info!(
+        //     "current image state {:?} (only relevant if the bootloader was built with auto-rollback support)",
+        //     ota.current_ota_state()
+        // );
+        // info!("current {:?} - next {:?}", current, current.next());
 
     }
 
+    let mut button_components = ButtonComponents::new(peripherals.GPIO37, peripherals.GPIO39, peripherals.GPIO35);    
+    if cfg!(feature = "gpio_interrupt") {
+        button_components = button_components.with_interrupts(Io::new(peripherals.IO_MUX));
+    }
 
-
-    let mut io = Io::new(peripherals.IO_MUX);
-    // Set the interrupt handler for GPIO interrupts.
-    io.set_interrupt_handler(handler);
 
     // Set GPIO19 as an output, and set its state low initially.
     let mut led = Output::new(peripherals.GPIO19, Level::Low, OutputConfig::default());
@@ -242,12 +229,6 @@ async fn main(spawner: Spawner) {
         }
     }
 
-    // Set GPIO37 as an input
-    let button_a: Input<'_> = Input::new(peripherals.GPIO37, InputConfig::default());
-    // Set GPIO39 as an input
-    let button_b = Input::new(peripherals.GPIO39, InputConfig::default());
-    // Set GPIO35 as an input
-    let button_c = Input::new(peripherals.GPIO35, InputConfig::default());
 
     // lets try to get the interface for the display
     let display_components = {
@@ -295,7 +276,7 @@ async fn main(spawner: Spawner) {
     //     error!("unable to spawn run_task: {}", e);
     // }
 
-    if let Ok(btn_reader) = initialize_buttons(button_a, button_b, button_c) {
+    if let Ok(btn_reader) = button_components.build() {
         if let Err(e) = spawner.spawn(btn_task(btn_reader)) {
             error!("unable to spawn run_task: {}", e);
         }
@@ -711,14 +692,3 @@ async fn render_worker(mut display: impl StickDrawTarget + DrawAsync, mut esp_rn
 // }
 
 
-
-#[handler]
-#[ram]
-fn handler() {
-    critical_section::with(|cs| {
-        info!("GPIO interrupt");
-        if let Some(all_buttons) = INPUT_BUTTONS.borrow(cs).borrow_mut().as_mut() {
-            all_buttons.interrupt_handler();
-        }
-    });
-}

@@ -1,3 +1,8 @@
+//! Music note definitions, song representation, and playback logic for Watchy-M5.
+//!
+//! This module provides note frequency constants, note and song types, and
+//! conversion utilities for playing music using the buzzer driver.
+
 use crate::{buzzer::{BuzzerCommand, BuzzerSender}, player::PlayerCmd};
 
 use {esp_backtrace as _, esp_println as _};
@@ -100,18 +105,26 @@ pub const NOTE_D8: f64 = 4699.0;
 pub const NOTE_DS8: f64 = 4978.0;
 pub const REST: f64 = 0.0; // No sound, for pauses
 
-
-/// NoteLength is from music notation like quarter notes, eigth notes, whole notes 
-/// the absolute value of the number is the divisor. ie 1 is a whole note, 2 is for a half note etc
-/// the sign indicates whether or not the note is dotted (which means it is slightly longer)
+/// Represents a note length in music notation (e.g., quarter, eighth, dotted).
+///
+/// The absolute value is the divisor (1 = whole, 2 = half, etc).
+/// The sign indicates if the note is dotted (negative = dotted).
 #[derive(Clone, Copy)]
 pub struct NoteLength (pub i16);
 
 impl NoteLength {
+    /// Returns true if the note is dotted.
     pub fn is_dotted(&self) -> bool {
         let NoteLength(l) = self;
         *l < 0
     }
+    /// Calculates the duration in milliseconds for this note length.
+    ///
+    /// # Arguments
+    /// * `whole_note` - The duration of a whole note in ms.
+    ///
+    /// # Returns
+    /// The duration in milliseconds.
     pub fn duration_ms(&self, whole_note: u32) -> u32 {
         let NoteLength(divider) = *self;
         if self.is_dotted() {
@@ -123,23 +136,40 @@ impl NoteLength {
     }    
 }
 
+/// Type alias for music note duration (notation divisor).
 pub type MusicNoteDuration = i16;
+/// Type alias for music note frequency in Hertz.
 pub type MusicNoteHertz = f64;
+/// Type alias for buzzer note duration in milliseconds.
 pub type BuzzerNoteDuration = u32;
+
+/// Represents a note or rest for the buzzer, with frequency and duration.
 #[derive(Clone, Copy, Debug, defmt::Format, PartialEq)]
 pub enum BuzzerNote {
+    /// A rest (silence) for the given duration.
     Rest(BuzzerNoteDuration),
+    /// A sound at the given frequency and duration.
     Sound(Rate, BuzzerNoteDuration),
 }
 
+/// Represents a music note or rest, using frequency and notation duration.
 #[derive(Debug, Clone, Copy, PartialEq, defmt::Format)]
 pub enum MusicNote {
+    /// A rest (silence) for the given duration (notation divisor).
     Rest(MusicNoteDuration),
+    /// A sound at the given frequency and duration (notation divisor).
     Sound(MusicNoteHertz, MusicNoteDuration),
 }
 
 impl MusicNote {
-
+    /// Calculates the duration in milliseconds for a note.
+    ///
+    /// # Arguments
+    /// * `divider` - The note length divisor.
+    /// * `whole_note` - The duration of a whole note in ms.
+    ///
+    /// # Returns
+    /// The duration in milliseconds.
     fn duration_ms(divider: &MusicNoteDuration, whole_note: &u32) -> u32 { 
         if *divider > 0 {
             whole_note / *divider as u32
@@ -149,6 +179,13 @@ impl MusicNote {
         }
     }
 
+    /// Converts a `MusicNote` to a `BuzzerNote` using the given whole note duration.
+    ///
+    /// # Arguments
+    /// * `whole_note` - The duration of a whole note in ms.
+    ///
+    /// # Returns
+    /// The corresponding `BuzzerNote`.
     pub fn to_buzzer_note(&self, whole_note: &u32) -> BuzzerNote {
         match self {
             MusicNote::Rest(d) => {
@@ -163,8 +200,8 @@ impl MusicNote {
     }
 }
 
-
 impl From<(MusicNoteHertz, MusicNoteDuration)> for MusicNote {
+    /// Converts a tuple of (frequency, duration) into a `MusicNote`.
     fn from(val: (MusicNoteHertz, MusicNoteDuration)) -> Self {
         let (hertz, duration) = val;
         if hertz == REST {
@@ -175,31 +212,46 @@ impl From<(MusicNoteHertz, MusicNoteDuration)> for MusicNote {
     }
 }
 
-
-
-
+/// Represents a note with a frequency and duration for the buzzer.
 #[derive(Clone, Copy, Debug, defmt::Format, PartialEq)]
 pub struct Note {
+    /// Frequency of the note.
     pub frequency: Rate, 
+    /// Duration of the note in milliseconds.
     pub duration_ms: u64,
 }
 
-
+/// Represents a song as a sequence of notes and playback state.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Song<'s> {
+    /// Duration of a whole note in milliseconds.
     whole_note: u32,
+    /// Slice of notes in the song.
     pub notes: &'s [MusicNote],
+    /// Current index in the song.
     index: usize,
+    /// Marker for lifetime.
     _phantom: PhantomData<&'s MusicNote>,
 }
 
-
 impl Song<'_> {
+    /// Creates a new `Song` from a tempo and a note slice.
+    ///
+    /// # Arguments
+    /// * `tempo` - The song tempo in beats per minute.
+    /// * `some_notes` - The slice of notes for the song.
+    ///
+    /// # Returns
+    /// A new `Song` instance.
     pub fn new(tempo: u16, some_notes: &'static [MusicNote]) -> Self {
         let whole_note = (60_000 * 4) / tempo as u32;
         Self { whole_note, notes: some_notes, _phantom: PhantomData, index: 0 }
     }
 
+    /// Advances to the next note and returns it as a `BuzzerNote`.
+    ///
+    /// # Returns
+    /// `Some(BuzzerNote)` if there is a next note, or `None` if at the end.
     pub fn next_note(&mut self) -> Option<BuzzerNote>{
         if let Some(note) = self.notes.get(self.index) {
             let buz_note = note.to_buzzer_note(&self.whole_note);
@@ -209,6 +261,13 @@ impl Song<'_> {
         None
     }
 
+    /// Plays the next note asynchronously, sending it to the buzzer.
+    ///
+    /// # Arguments
+    /// * `tx` - The `BuzzerSender` to send buzzer commands.
+    ///
+    /// # Returns
+    /// `Some(index)` if a note was played, or `None` if at the end.
     pub async fn play_next_note(&mut self, tx: BuzzerSender<'_>) -> Option<usize> {
         if let Some(buz_note) = self.next_note() {
             let now = Instant::now();
@@ -221,7 +280,6 @@ impl Song<'_> {
             } as u64;
             let expires_at = now + Duration::from_millis_floor(duration_ms as u64);
             Timer::at(expires_at).await;
-            // Timer::after(Duration::from_millis(duration_ms)).await;
             Some(self.index)
         } else {
             self.index = 0;
@@ -229,6 +287,10 @@ impl Song<'_> {
         }
     }
 
+    /// Plays the entire song asynchronously, sending each note to the buzzer.
+    ///
+    /// # Arguments
+    /// * `tx` - The `BuzzerSender` to send buzzer commands.
     pub async fn play(&mut self, tx: BuzzerSender<'_>) {
         let note_iter = self.notes.iter();
         for note in note_iter {
@@ -244,22 +306,32 @@ impl Song<'_> {
         }
     }
 
+    /// Stops playback and resets the song index.
     pub fn stop(&mut self) {
         self.index = 0;
     }
 }
 
-
-
+/// Represents the playback state of a song.
 #[derive(Debug, defmt::Format, Default, PartialEq, Clone)]
 pub enum SongState {
+    /// Song is stopped.
     #[default] 
     Stopped,
+    /// Song is paused.
     Paused,
+    /// Song is playing.
     Playing,
 }
 
 impl SongState {
+    /// Executes a player command and returns the new state.
+    ///
+    /// # Arguments
+    /// * `cmd` - The player command to execute.
+    ///
+    /// # Returns
+    /// The new `SongState`.
     pub fn execute(self, cmd: PlayerCmd) -> Self {        
         match (self, cmd) {
             (SongState::Stopped, PlayerCmd::Play) => SongState::Playing,

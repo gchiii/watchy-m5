@@ -10,5 +10,3 @@ pub mod player;
 pub mod display;
 pub mod display_buf;
 pub mod widgets;
-pub mod gfx;
-// pub mod sprites;

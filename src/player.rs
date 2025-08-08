@@ -1,3 +1,9 @@
+//! Music player state machine and command interface for Watchy-M5.
+//!
+//! This module provides types and an async player for controlling song playback
+//! using the buzzer driver. It supports play, pause, stop, and song loading commands,
+//! and reacts to button events for playback control.
+
 use core::{cell::RefCell, marker::PhantomData};
 use defmt::info;
 use embassy_futures::select::{select, select3, Either, Either3};
@@ -7,21 +13,29 @@ use static_cell::StaticCell;
 use crate::buttons::{ButtonEvent, InputEvent, InputSubscriber, BUTTON_EVENT_CHANNEL};
 use crate::{buzzer::BuzzerSender, music::Song};
 
-
-
+/// Depth of the player command channel.
 const PLAYER_CHANNEL_DEPTH: usize = 3;
+
+/// Embassy channel for sending player commands.
 pub type PlayerChannel = Channel::<CriticalSectionRawMutex, PlayerCmd, PLAYER_CHANNEL_DEPTH>;
+/// Sender for player commands.
 pub type PlayerSender<'a> = embassy_sync::channel::Sender<'a, CriticalSectionRawMutex, PlayerCmd, PLAYER_CHANNEL_DEPTH>;
+/// Receiver for player commands.
 pub type PlayerReceiver<'a> = embassy_sync::channel::Receiver<'a, CriticalSectionRawMutex, PlayerCmd, PLAYER_CHANNEL_DEPTH>;
 
+/// Global static for the player sender, protected by a critical section mutex.
 pub static PLAYER_SEND: CriticalSectionMutex<RefCell<Option< PlayerSender<'static> >>> = CriticalSectionMutex::new(RefCell::new(None));
 
-
+/// Commands for controlling the music player.
 #[derive(Debug, PartialEq)]
 pub enum PlayerCmd {
+    /// Stop playback.
     Stop,
+    /// Pause playback.
     Pause,
+    /// Start or resume playback.
     Play,
+    /// Load a new song.
     LoadSong(Song<'static>),
 }
 
@@ -36,21 +50,27 @@ impl defmt::Format for PlayerCmd {
     }
 }
 
-
+/// State of the music player.
 #[derive(Debug, Default, PartialEq, Clone, Copy)]
 pub enum PlayerState {
+    /// No song loaded.
     #[default] 
     NoSong,
+    /// Song loaded and stopped.
     Stopped(Song<'static>),
+    /// Song loaded and paused.
     Paused(Song<'static>),
+    /// Song loaded and playing.
     Playing(Song<'static>),
 }
 
 impl PlayerState {
+    /// Returns true if the player is currently playing a song.
     pub fn is_playing(self) -> bool {
         matches!(self, PlayerState::Playing(_))
     }
 
+    /// Returns the currently playing song, if any.
     pub fn get_playing_song(self) -> Option<Song<'static>> {
         match self {
             PlayerState::Playing(song) => Some(song),
@@ -58,6 +78,7 @@ impl PlayerState {
         }
     }
 
+    /// Returns the loaded song, if any, regardless of state.
     pub fn song(self) -> Option<Song<'static>> {
         match self {
             PlayerState::NoSong => None,
@@ -67,6 +88,9 @@ impl PlayerState {
         }
     }
 
+    /// Executes a button input event and returns the new player state.
+    ///
+    /// Button A/B/C toggles between playing and paused/stopped states.
     pub fn exec_input(self, event: InputEvent) -> PlayerState {
         match (event, self) {
             (_, PlayerState::NoSong) => PlayerState::NoSong,
@@ -81,6 +105,8 @@ impl PlayerState {
             (InputEvent::ButtonC(_button_event), PlayerState::Playing(song)) => PlayerState::Paused(song),
         }
     }
+
+    /// Executes a player command and returns the new player state.
     pub fn exec_cmd(self, cmd: &mut PlayerCmd) -> PlayerState {
         match (cmd, self) {
             (PlayerCmd::Stop, PlayerState::Paused(mut song)) => {
@@ -109,23 +135,37 @@ impl PlayerState {
     }
 }
 
-
-// the player needs to have a channel for receiving commands and data, and needs a channel to send data to the buzzer
+/// The music player, which manages playback state and communicates with the buzzer.
+///
+/// The player receives commands and button events, and sends notes to the buzzer.
 pub struct Player<'p> {
+    /// Sender for buzzer commands.
     buzz: BuzzerSender<'p>,
+    /// Current player state.
     state: PlayerState,
+    /// Marker for lifetime.
     _phantom: PhantomData<&'p PlayerChannel>,
+    /// Receiver for player commands.
     rx: PlayerReceiver<'p>,
 }
 
+/// Static cell for the player command channel.
 static PCHAN: StaticCell<PlayerChannel> = StaticCell::new();
 
 impl<'p> Player<'p> {
-
+    /// Creates and returns a static reference to the player command channel.
     pub fn create_chan() -> &'static mut PlayerChannel {        
         PCHAN.init_with(PlayerChannel::new)
     }
 
+    /// Constructs a new `Player` instance.
+    ///
+    /// # Arguments
+    /// * `buzz` - The buzzer command sender.
+    /// * `rx` - The player command receiver.
+    ///
+    /// # Returns
+    /// A new `Player`.
     pub fn new(buzz: BuzzerSender<'p>, rx: PlayerReceiver<'p>) -> Self {
         Self { 
             buzz, 
@@ -135,7 +175,13 @@ impl<'p> Player<'p> {
         }
     }
 
-
+    /// Plays the next note in the song and returns the new player state.
+    ///
+    /// # Arguments
+    /// * `song` - The song to play.
+    ///
+    /// # Returns
+    /// `PlayerState::Playing(song)` if there are more notes, or `PlayerState::Stopped(song)` if finished.
     pub async fn playing(&self, mut song: Song<'static>) -> PlayerState {
         match song.play_next_note(self.buzz).await {
             Some(_) => PlayerState::Playing(song),
@@ -143,6 +189,16 @@ impl<'p> Player<'p> {
         }
     }
 
+    /// Handles player logic, reacting to both button events and player commands.
+    ///
+    /// This method concurrently waits for button events, player commands, and note playback,
+    /// updating the player state accordingly.
+    ///
+    /// # Arguments
+    /// * `input_sub` - The input event subscriber.
+    ///
+    /// # Returns
+    /// The new player state.
     pub async fn fancy_exec(&mut self, input_sub: &mut InputSubscriber<'p>) -> PlayerState {
         let cmd_rx = self.rx.receive();
         let msg_rx = input_sub.next_message_pure();
@@ -169,6 +225,12 @@ impl<'p> Player<'p> {
         self.state
     }
 
+    /// Handles player commands and advances playback state.
+    ///
+    /// Waits for a command, executes it, and updates the player state.
+    ///
+    /// # Returns
+    /// The new player state.
     pub async fn exec(&mut self) -> PlayerState {
         let player_rx = self.rx;
         let mut guard = self.state;
@@ -184,10 +246,11 @@ impl<'p> Player<'p> {
         self.state = guard;
         player_state
     }
-
 }
 
-
+/// Embassy executor task for running the player event loop.
+///
+/// This task waits for button events and player commands, and manages playback state.
 #[embassy_executor::task(pool_size = 4)]
 pub async fn player_task(mut player: Player<'static>) {
     let mut input_event_sub: Option<InputSubscriber<'_>> = BUTTON_EVENT_CHANNEL.subscriber().ok();

@@ -12,9 +12,6 @@ use embedded_graphics::{mono_font::{ascii::FONT_9X15, MonoTextStyle}, prelude::*
 use u8g2_fonts::{fonts::u8g2_font_6x12_m_symbols, U8g2TextStyle};
 
 
-
-// static FANCY_FONT: FontRenderer = FontRenderer::new::<u8g2_fonts::fonts::u8g2_font_6x12_m_symbols>();
-
 #[derive(Clone, Debug)]
 pub enum MyCharacterStyle<'a, C: PixelColor + Default> {
     Mono(MonoTextStyle<'a, C>),

@@ -51,8 +51,12 @@ use pcf8563::Pcf8563;
 use rand::{Rng, SeedableRng};
 use static_cell::StaticCell;
 use u8g2_fonts::{fonts::{u8g2_font_6x12_m_symbols, u8g2_font_6x12_t_symbols}, FontRenderer, U8g2TextStyle};
-use watchy_m5::{buttons::{btn_task, initialize_buttons, ButtonComponents, INPUT_BUTTONS}, display::{byte_slice_to_pixels, Backlight, DisplayBuilder, DisplayComponents, DisplayError, DrawAsync, StickDisplayT, StickDrawTarget, StickExtraFrameBuf, StickFrameBuf, StickRawFrameBuf}, display_buf::StickDisplayBuffer, widgets::{MyCharacterStyle, ScrollingMarquee, StyleableTextWindow, TextWindow}};
-use watchy_m5::display::{HEIGHT, WIDTH};
+use watchy_m5::display_buf::StickDisplayBuffer;
+use watchy_m5::widgets::{MyCharacterStyle, ScrollingMarquee, StyleableTextWindow, TextWindow};
+#[cfg(feature = "gpio_interrupt")]
+use watchy_m5::buttons::{btn_task, initialize_buttons, INPUT_BUTTONS};
+use watchy_m5::buttons::{button_dispatch, ButtonComponents};
+use watchy_m5::display::{HEIGHT, WIDTH, byte_slice_to_pixels, Backlight, DisplayBuilder, DisplayComponents, DisplayError, DrawAsync, StickDisplayT, StickDrawTarget, StickExtraFrameBuf, StickFrameBuf, StickRawFrameBuf};
 use watchy_m5::buzzer::{Buzzer, BuzzerChannel, BuzzerState};
 use watchy_m5::music::Song;
 use watchy_m5::player::{player_task, PlayerCmd, Player};
@@ -276,11 +280,15 @@ async fn main(spawner: Spawner) {
     //     error!("unable to spawn run_task: {}", e);
     // }
 
+    if let Err(e) = spawner.spawn(button_dispatch(button_components)) {
+        error!("unable to spawn run_task: {}", e);
+    }
+
+    #[cfg(feature = "gpio_interrupt")]
     if let Ok(btn_reader) = button_components.build() {
         if let Err(e) = spawner.spawn(btn_task(btn_reader)) {
             error!("unable to spawn run_task: {}", e);
         }
-
     }
     
  

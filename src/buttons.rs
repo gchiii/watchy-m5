@@ -1,15 +1,20 @@
-use core::{cell::RefCell, ops::Sub, str};
+use core::ops::Sub;
 
 use {esp_backtrace as _, esp_println as _};
 
 use defmt::{info, trace};
 use embassy_futures::select::select3;
+#[cfg(feature = "gpio_interrupt")]
 use embassy_sync::{blocking_mutex::CriticalSectionMutex, pubsub::WaitResult};
 
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, pubsub::PubSubChannel};
 use embassy_time::{Duration, Instant};
-use esp_hal::{gpio::{AnyPin, Event, Input, InputConfig, InputPin, Level, Pull}, handler};
+use esp_hal::gpio::{Event, Input, InputConfig, InputPin, Level, Pull};
+#[cfg(feature = "gpio_interrupt")]
+use esp_hal::{handler};
+
 use esp_hal::gpio::Io;
+#[cfg(feature = "gpio_interrupt")]
 use esp_hal::ram;
 use thiserror_no_std::Error;
 
@@ -84,27 +89,57 @@ pub struct InputButton<'a> {
 }
 
 impl<'a> InputButton<'a> {
+    /// Creates a new `InputButton` with the given input pin and name.
+    ///
+    /// # Arguments
+    /// * `button` - The input pin associated with the button.
+    /// * `name` - The name of the button.
+    ///
+    /// # Returns
+    /// A new `InputButton` instance.
     #[must_use]
     pub const fn new(button: Input<'a>, name: &'a str) -> Self {
         Self { input: button, name }
     }
 
+    /// Returns the name of the button.
+    ///
+    /// # Returns
+    /// The button name as a string slice.
     #[inline]
     pub const fn name(&self) -> &'a str {
         self.name
     }
 
+    /// Returns a mutable reference to the underlying input pin.
+    ///
+    /// # Returns
+    /// A mutable reference to the [`Input`] pin.
     #[inline]
     pub fn input(&mut self) -> &mut Input<'a> {
         &mut self.input
     }
 
+    /// Checks if an interrupt is set for the button pin.
+    ///
+    /// # Returns
+    /// `true` if an interrupt is set, `false` otherwise.
     #[inline]
     pub fn is_interrupt_set(self) -> bool {
         self.input.is_interrupt_set()        
     }
 
+    /// Handles a GPIO interrupt event and returns the corresponding `RawButtonEvent`.
+    ///
+    /// This method is only available if the `gpio_interrupt` feature is enabled.
+    ///
+    /// # Arguments
+    /// * `ts` - The timestamp of the interrupt event.
+    ///
+    /// # Returns
+    /// The corresponding [`RawButtonEvent`] (`Down` or `Up`).
     #[cfg(feature = "gpio_interrupt")]
+    #[ram]
     pub fn interrupt_event(&mut self, ts: Instant) -> RawButtonEvent {
         self.input().clear_interrupt();
         match self.input().level() {
@@ -119,7 +154,11 @@ impl<'a> InputButton<'a> {
         }            
     }
 
-    async fn event(&mut self) -> RawButtonEvent {
+    /// Waits asynchronously for the next button event (edge).
+    ///
+    /// # Returns
+    /// The next [`RawButtonEvent`] (`Down` or `Up`).
+    pub async fn event(&mut self) -> RawButtonEvent {
         match self.input.level() {
             Level::Low => {
                 self.input.wait_for_rising_edge().await;
@@ -146,10 +185,14 @@ impl<'a> InputButton<'a> {
 /// - `name`: The name associated with this button reader.
 /// - `previous_event`: The last received raw button event, if any.
 pub struct ButtonReader<'a> { 
-    raw_events: ButtonSubscriber<'a>, 
+    #[cfg(feature = "gpio_interrupt")]
+    raw_event_source: ButtonSubscriber<'a>, 
+    #[cfg(not(feature = "gpio_interrupt"))]
+    btn: InputButton<'a>,
     name: &'a str, 
     previous_event: Option<RawButtonEvent> 
 }
+
 
 impl<'a> ButtonReader<'a> {
     /// Creates a new `ButtonReader` with the given subscriber and name.
@@ -160,9 +203,15 @@ impl<'a> ButtonReader<'a> {
     ///
     /// # Returns
     /// A new `ButtonReader` instance.
+    #[cfg(feature = "gpio_interrupt")]
     #[must_use]
     pub const fn new(sub: ButtonSubscriber<'a>, name: &'a str) -> Self {
-        Self { raw_events: sub, name, previous_event: None }
+        Self { raw_event_source: sub, name, previous_event: None }
+    }
+
+    #[must_use]
+    pub const fn new(btn: InputButton<'a>, name: &'a str) -> Self {
+        Self { btn, name, previous_event: None }
     }
 
     /// Returns the name of the button associated with this reader.
@@ -172,6 +221,19 @@ impl<'a> ButtonReader<'a> {
     #[inline]
     pub fn name(&self) -> &'a str {
         self.name
+    }
+
+    
+    async fn next_raw_event(&mut self) -> RawButtonEvent {
+        #[cfg(feature = "gpio_interrupt")]
+        loop {
+            let wr = self.raw_event_source.next_message().await;
+            if let WaitResult::Message(raw_event) = wr {
+                return raw_event;
+            }
+        }
+        #[cfg(not(feature = "gpio_interrupt"))]
+        self.btn.event().await
     }
 
     /// Debounces a raw button event by comparing it to the previous event.
@@ -185,7 +247,7 @@ impl<'a> ButtonReader<'a> {
     ///
     /// # Returns
     /// The debounced button event.
-    pub fn debounce(&self, raw_event: RawButtonEvent) -> RawButtonEvent {
+    fn debounce_logic(&self, raw_event: RawButtonEvent) -> RawButtonEvent {
         match self.previous_event {
             Some(previous) => {
                 let btn_elapsed = raw_event - previous;
@@ -206,12 +268,33 @@ impl<'a> ButtonReader<'a> {
     /// # Returns
     /// The next debounced `RawButtonEvent`.
     pub async fn read_debounced(&mut self) -> RawButtonEvent {
-        loop {
-            let wr = self.raw_events.next_message().await;
-            if let WaitResult::Message(raw_event) = wr {
-                return self.debounce(raw_event)
-            }
-        }
+        let raw_event = self.next_raw_event().await;
+        self.debounce_logic(raw_event)
+    }
+
+    fn cook_raw_event(&mut self, raw_event: RawButtonEvent) -> Option<ButtonEvent> {
+        let cooked = match self.previous_event {
+            Some(previous_raw) => {
+                let elapsed = raw_event - previous_raw;
+                if let (RawButtonEvent::Down(_), RawButtonEvent::Up(_)) = (previous_raw, raw_event) {
+                    // down followed by up
+                    if elapsed >= LONG_PRESS_DURATION {
+                        trace!("Button({}): Long ({})", self.name, elapsed);
+                        Some(ButtonEvent::Long)
+                    } else {
+                        trace!("Button({}): Short ({})", self.name, elapsed);
+                        Some(ButtonEvent::Short)
+                    }
+                } else {
+                    None
+                }
+            },
+            None => {                
+                None
+            },
+        };
+        self.previous_event = Some(raw_event);
+        cooked
     }
 
     /// Waits for and returns the next logical button event (`Short` or `Long` press).
@@ -224,20 +307,8 @@ impl<'a> ButtonReader<'a> {
     pub async fn get_button_event(&mut self) -> ButtonEvent {
         loop {            
             let raw_event = self.read_debounced().await;
-            if let Some(previous_event) = self.previous_event {
-                let elapsed = raw_event - previous_event;
-                if let (RawButtonEvent::Down(_), RawButtonEvent::Up(_)) = (previous_event, raw_event) {
-                    // down followed by up
-                    if elapsed >= LONG_PRESS_DURATION {
-                        trace!("Button({}): Long ({})", self.name, elapsed);
-                        return ButtonEvent::Long;
-                    } else {
-                        trace!("Button({}): Short ({})", self.name, elapsed);
-                        return ButtonEvent::Short;
-                    }
-                };
-            } else {
-                self.previous_event = Some(raw_event);
+            if let Some(cooked) = self.cook_raw_event(raw_event) {
+                return cooked;
             }
         }
     }
@@ -275,6 +346,7 @@ impl<'a> ButtonReaderCollection<'a> {
     }
 }
 
+#[cfg(feature = "gpio_interrupt")]
 #[embassy_executor::task]
 pub async fn btn_task(btn_reader: ButtonReaderCollection<'static>) {
     let input_event_pub = BUTTON_EVENT_CHANNEL.publisher().ok();
@@ -288,6 +360,23 @@ pub async fn btn_task(btn_reader: ButtonReaderCollection<'static>) {
     }
 }
 
+#[embassy_executor::task]
+pub async fn button_dispatch(button_components: ButtonComponents) {
+    if let Ok(mut btn_reader) = button_components.build() {
+        let input_event_pub = BUTTON_EVENT_CHANNEL.publisher().ok();
+        
+        loop {
+            let input_event = btn_reader.button_events().await;
+            info!("Event: {}", input_event);
+            if let Some(ref iepub) = input_event_pub {
+                iepub.publish_immediate(input_event);
+            }
+        }
+    }
+}
+
+
+#[cfg(feature = "gpio_interrupt")]
 pub static INPUT_BUTTONS: CriticalSectionMutex<RefCell<Option< ButtonInputCollection<'static> >>> = CriticalSectionMutex::new(RefCell::new(None));
 
 pub static BUTTON_EVENT_CHANNEL: InputPubSubChan = InputPubSubChan::new();
@@ -307,7 +396,7 @@ pub struct ButtonInputCollection<'a> {
 }
 
 impl<'a> ButtonInputCollection<'a> {
-    // #[must_use]
+    #[must_use]
     pub fn new(mut btn_a: Input<'static>, mut btn_b: Input<'a>, mut btn_c: Input<'a>) -> Result<Self, ButtonError> {
         btn_a.listen(Event::AnyEdge);
         btn_b.listen(Event::AnyEdge);
@@ -322,6 +411,27 @@ impl<'a> ButtonInputCollection<'a> {
                 a_pub: A_CHAN.publisher()?, b_pub: B_CHAN.publisher()?, c_pub: C_CHAN.publisher()?,
             }
         )
+    }
+
+    pub async fn publish_raw_events(&mut self) {
+        let a_raw = self.a.event();
+        let b_raw = self.b.event();
+        let c_raw = self.c.event();
+        
+        match select3(a_raw, b_raw, c_raw).await {
+            embassy_futures::select::Either3::First(raw_event) => {
+                self.a_pub.publish_immediate(raw_event);
+                trace!("Button {}", self.a.name());
+            },
+            embassy_futures::select::Either3::Second(raw_event) => {
+                self.b_pub.publish_immediate(raw_event);
+                trace!("Button {}", self.b.name());
+            },
+            embassy_futures::select::Either3::Third(raw_event) => {
+                self.c_pub.publish_immediate(raw_event);
+                trace!("Button {}", self.c.name());
+            },
+        }
     }
 
     #[cfg(feature = "gpio_interrupt")]
@@ -352,7 +462,7 @@ impl<'a> ButtonInputCollection<'a> {
     }
 }
 
-
+#[cfg(feature = "gpio_interrupt")]
 pub fn initialize_buttons(button_a: Input<'static>, button_b: Input<'static>, button_c: Input<'static>) -> Result<ButtonReaderCollection<'static>, ButtonError> {
     let btn_inputs = ButtonInputCollection::new(button_a, button_b, button_c)?;
 
@@ -398,12 +508,30 @@ impl ButtonComponents {
         }
     }
 
+    #[cfg(not(feature = "gpio_interrupt"))]
     pub fn build(self) -> Result<ButtonReaderCollection<'static>, ButtonError> {
+        let a = InputButton::new(self.a, "btn_a");
+        let b = InputButton::new(self.b, "btn_b");
+        let c = InputButton::new(self.c, "btn_c");
+
+
+        let btn_reader_a = ButtonReader::new(a, "btn_a");
+        let btn_reader_b = ButtonReader::new(b, "btn_b");
+        let btn_reader_c = ButtonReader::new(c, "btn_c");
+
+
+        let btn_readers: ButtonReaderCollection<'static> = ButtonReaderCollection::new(btn_reader_a, btn_reader_b, btn_reader_c);
+
+        Ok(btn_readers)
+    }
+
+    #[cfg(feature = "gpio_interrupt")]
+    pub fn build(self) -> Result<(ButtonInputCollection<'static>, ButtonReaderCollection<'static>), ButtonError> {
         let button_a = self.a;
         let button_b = self.b;
         let button_c = self.c;
 
-        let btn_inputs = ButtonInputCollection::new(button_a, button_b, button_c)?;
+        let btn_inputs: ButtonInputCollection<'static> = ButtonInputCollection::new(button_a, button_b, button_c)?;
 
         let a_sub = A_CHAN.subscriber()?;
         let btn_reader_a = ButtonReader::new(a_sub, "btn_a");
@@ -415,18 +543,22 @@ impl ButtonComponents {
 
         let btn_readers: ButtonReaderCollection<'static> = ButtonReaderCollection::new(btn_reader_a, btn_reader_b, btn_reader_c);
 
+        #[cfg(feature = "gpio_interrupt")]
         critical_section::with(|cs| {
             INPUT_BUTTONS.borrow(cs).replace(Some(btn_inputs));
         });
 
+        #[cfg(feature = "gpio_interrupt")]
         if let Some(mut io) = self.io {
             // Set the interrupt handler for GPIO interrupts.
             io.set_interrupt_handler(gpio_interrupt_handler);
         }
-        Ok(btn_readers)
+        Ok((btn_inputs, btn_readers))
     }
 }
 
+
+#[cfg(feature = "gpio_interrupt")]
 #[handler]
 #[ram]
 fn gpio_interrupt_handler() {
@@ -438,22 +570,3 @@ fn gpio_interrupt_handler() {
     });
 }
 
-
-// #[embassy_executor::task]
-// async fn press_button(mut button: AnyPin<'static>) {
-//     loop {
-//       // Wait for Button Press
-//       button.wait_for_rising_edge().await.unwrap();
-//       esp_println:: println!("Button Pressed!");
-//       // Retrieve Delay Global Variable
-//       let del = BLINK_DELAY.load(Ordering::Relaxed);
-//       // Adjust Delay Accordingly
-//       if del <= 50_u32 {
-//         BLINK_DELAY.store(200_u32,Ordering::Relaxed);
-//         esp_println:: println!("Delay is now 200ms");
-//       } else {
-//         BLINK_DELAY.store(del - 50_u32,Ordering::Relaxed);
-//         esp_println:: println!("Delay is now {}ms", del - 50_u32);
-//       } 
-//     }
-// }

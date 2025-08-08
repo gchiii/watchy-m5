@@ -163,7 +163,6 @@ pub type StickDisplaySpiInterface<'d, SBus> = SpiInterface<StickDisplayExclusive
 #[cfg(feature = "mipidsi")]
 pub type StickDisplaySpiInterface<'d, SBus> = SpiInterface<'d, StickDisplayExclusiveDevice<'d, SBus>, Output<'d>>;
 pub type StickDisplayT<'d, SBus> = StickDisplay<'d, StickDisplaySpiInterface<'d, SBus>, Output<'d>>;
-// type StickDrawTarget<'d> = CrazyDisplay<'d, StickDisplaySpiDmaBusAsync<'d>>;
 
 
 
@@ -320,6 +319,8 @@ where
     // buffer: &'static mut Vec<Rgb565, esp_alloc::InternalMemory>,
     bounding_box: Rectangle,
 }
+
+pub trait StickDrawTarget: DrawTarget<Color = Rgb565, Error = DisplayError> + Backlight {}
 
 
 
@@ -488,9 +489,7 @@ where
 #[cfg(feature = "mipidsi")]
 impl<DI, OP> DrawTarget for StickDisplay<'_, DI, OP> 
 where 
-    // DI: Interface<Word = u8, Error = SpiError<DeviceError<esp_hal::spi::Error, Infallible>, Infallible>>,
     DI: Interface<Word = u8>,
-    // DI: Interface<Word = u8, Error = SpiError<esp_hal::spi::Error, embedded_hal::digital::ErrorKind>>,
     OP: embedded_hal::digital::OutputPin,
 {
     type Color = Rgb565;
@@ -499,21 +498,19 @@ where
     fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
     where
         I: IntoIterator<Item = embedded_graphics::Pixel<Self::Color>> {
-            // let mut fb = FrameBuf::new(self.buffer.as_mut_array::<{ WIDTH*HEIGHT }>().expect("really bad"), WIDTH, HEIGHT);
-            // fb.draw_iter(pixels)?;
             if let Err(_e) = self.d.draw_iter(pixels) {
                 return Err(DisplayError::OtherError);
-                // match e {
-                //     SpiError::Spi(e) => {
-                //         return Err(e.into());
-                //     },
-                //     SpiError::Dc(e) => return Err(e.into()),
-                // }
             }
             Ok(())
     }
 }
 
+#[cfg(feature = "mipidsi")]
+impl<'d, DI, OP> StickDrawTarget for StickDisplay<'d, DI, OP>
+where 
+    DI: Interface<Word = u8>,
+    OP: embedded_hal::digital::OutputPin,
+{}
 
 #[cfg(feature = "lcdasync")]
 impl<DI, OP> DrawTarget for StickDisplay<'_, DI, OP> 
@@ -534,7 +531,11 @@ where
     }
 }
 
-
+impl<'d, DI, OP> StickDrawTarget for StickDisplay<'d, DI, OP>
+where 
+    DI: Interface<Word = u8, Error = SpiError<embassy_embedded_hal::shared_bus::SpiDeviceError<esp_hal::spi::Error, core::convert::Infallible>, core::convert::Infallible>>,
+    OP: embedded_hal::digital::OutputPin,
+{}
 
 #[derive(Debug)]
 pub enum EspSpiBlockingBus<'d> {

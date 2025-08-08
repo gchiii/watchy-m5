@@ -405,11 +405,6 @@ async fn main(spawner: Spawner) {
 }
 
 
-// type StickDrawTarget<'d> = StickDisplayT<'d, StickDisplaySpiDmaBusAsync<'d>>;
-// type StickDrawTarget<'d> = StickDisplayT<'d, StickDisplaySpiDmaBusBlocking<'d>>;
-// type StickDrawTarget<'d> = StickDisplay<'d, MySpiInterface<'d>, Output<'d>>;
-// type StickDrawTarget<'d> = CrazyDisplay<'d, StickDisplaySpiDmaBusBlocking<'d>>;
-
 #[embassy_executor::task]
 async fn display_task(components: DisplayComponents<'static>, esp_rng: esp_hal::rng::Rng) {
     let builder = DisplayBuilder::from_components(components);
@@ -442,18 +437,14 @@ impl FractionaScale for Size {
     }
 }
 
-async fn render_worker(mut display: impl DrawTarget<Color = Rgb565, Error = DisplayError> + Backlight + DrawAsync, mut esp_rng: esp_hal::rng::Rng) -> Result<(), DisplayError> {
-    // let mut display_buffer = StickDisplayBuffer::create();
-    // let mut fb_display = display_buffer.get_framebuffer();
 
+async fn render_worker(mut display: impl StickDrawTarget + DrawAsync, mut esp_rng: esp_hal::rng::Rng) -> Result<(), DisplayError> {
     let full_screen_r = display.bounding_box();
 
     let bg_color = Rgb565::CSS_LIGHT_BLUE;
     display.clear(bg_color)?;
     display.on();
     display.draw_sub_region(&full_screen_r).await?;
-    info!("made it here!");
-    // fb_display.clear(bg_color)?;
 
     let full_screen = Rectangle::new(Point::zero(), Size::new(WIDTH as u32, HEIGHT as u32));
     let bottom_right = full_screen.bottom_right().unwrap_or_default();

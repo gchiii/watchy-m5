@@ -118,25 +118,75 @@ impl<'a> InputButton<'a> {
             },
         }            
     }
+
+    async fn event(&mut self) -> RawButtonEvent {
+        match self.input.level() {
+            Level::Low => {
+                self.input.wait_for_rising_edge().await;
+                RawButtonEvent::Up(Instant::now())
+            },
+            Level::High => {
+                self.input.wait_for_falling_edge().await;
+                RawButtonEvent::Down(Instant::now())
+            },
+        }
+    }
 }
 
 
-pub struct ButtonReader<'a>(ButtonSubscriber<'a>, &'a str, Option<RawButtonEvent>);
+
+/// A struct that reads and tracks button events from a button subscriber.
+///
+/// `ButtonReader` provides an interface to receive raw button events,
+/// keep track of the previous event, and associate a name with the reader
+/// for identification purposes.
+///
+/// # Fields
+/// - `raw_events`: The subscriber that provides raw button events.
+/// - `name`: The name associated with this button reader.
+/// - `previous_event`: The last received raw button event, if any.
+pub struct ButtonReader<'a> { 
+    raw_events: ButtonSubscriber<'a>, 
+    name: &'a str, 
+    previous_event: Option<RawButtonEvent> 
+}
 
 impl<'a> ButtonReader<'a> {
+    /// Creates a new `ButtonReader` with the given subscriber and name.
+    ///
+    /// # Arguments
+    /// * `sub` - The button event subscriber.
+    /// * `name` - The name of the button.
+    ///
+    /// # Returns
+    /// A new `ButtonReader` instance.
     #[must_use]
     pub const fn new(sub: ButtonSubscriber<'a>, name: &'a str) -> Self {
-        Self(sub, name, None)
+        Self { raw_events: sub, name, previous_event: None }
     }
 
+    /// Returns the name of the button associated with this reader.
+    ///
+    /// # Returns
+    /// The button name as a string slice.
     #[inline]
     pub fn name(&self) -> &'a str {
-        self.1
+        self.name
     }
 
-
+    /// Debounces a raw button event by comparing it to the previous event.
+    ///
+    /// If the time elapsed since the previous event is greater than or equal to
+    /// `BUTTON_DEBOUNCE_DELAY`, the new event is considered valid. Otherwise,
+    /// the previous event is returned to filter out spurious presses.
+    ///
+    /// # Arguments
+    /// * `raw_event` - The new raw button event to debounce.
+    ///
+    /// # Returns
+    /// The debounced button event.
     pub fn debounce(&self, raw_event: RawButtonEvent) -> RawButtonEvent {
-        match self.2 {
+        match self.previous_event {
             Some(previous) => {
                 let btn_elapsed = raw_event - previous;
                 if btn_elapsed >= BUTTON_DEBOUNCE_DELAY {
@@ -149,32 +199,45 @@ impl<'a> ButtonReader<'a> {
         }
     }
 
+    /// Reads the next debounced raw button event asynchronously.
+    ///
+    /// Waits for the next button event from the subscriber and applies debouncing.
+    ///
+    /// # Returns
+    /// The next debounced `RawButtonEvent`.
     pub async fn read_debounced(&mut self) -> RawButtonEvent {
         loop {
-            let wr = self.0.next_message().await;
+            let wr = self.raw_events.next_message().await;
             if let WaitResult::Message(raw_event) = wr {
                 return self.debounce(raw_event)
             }
         }
     }
 
+    /// Waits for and returns the next logical button event (`Short` or `Long` press).
+    ///
+    /// This method tracks the time between button down and up events to determine
+    /// if the press was short or long, based on `LONG_PRESS_DURATION`.
+    ///
+    /// # Returns
+    /// The next `ButtonEvent` (`Short` or `Long`).
     pub async fn get_button_event(&mut self) -> ButtonEvent {
         loop {            
             let raw_event = self.read_debounced().await;
-            if let Some(previous_event) = self.2 {
+            if let Some(previous_event) = self.previous_event {
                 let elapsed = raw_event - previous_event;
                 if let (RawButtonEvent::Down(_), RawButtonEvent::Up(_)) = (previous_event, raw_event) {
                     // down followed by up
                     if elapsed >= LONG_PRESS_DURATION {
-                        trace!("Button({}): Long ({})", self.1, elapsed);
+                        trace!("Button({}): Long ({})", self.name, elapsed);
                         return ButtonEvent::Long;
                     } else {
-                        trace!("Button({}): Short ({})", self.1, elapsed);
+                        trace!("Button({}): Short ({})", self.name, elapsed);
                         return ButtonEvent::Short;
                     }
                 };
             } else {
-                self.2 = Some(raw_event);
+                self.previous_event = Some(raw_event);
             }
         }
     }

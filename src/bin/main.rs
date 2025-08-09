@@ -3,27 +3,25 @@
 #![feature(slice_as_array)]
 #![feature(where_clause_attrs)]
 
-use alloc::string::{String, ToString};
+#[cfg(feature = "wifi")]
 use embassy_net::{Runner, StackResources, tcp::TcpSocket};
 use esp_alloc as _;
 extern crate alloc;
 
-use allocator_api2::vec::Vec;
 use defmt::{error, info, trace};
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Instant, Timer};
-use embedded_graphics_framebuf::FrameBuf;
 use embedded_hal_bus::i2c::RefCellDevice;
 
-use embedded_layout::{align::{horizontal, vertical, Align}, prelude::Chain, View};
+use embedded_layout::{align::{horizontal, vertical, Align}, View};
 use embedded_physics::sprites::{Sprite, SpriteContainer};
-use esp_alloc::HeapStats;
 use esp_bootloader_esp_idf::partitions::DataPartitionSubType;
 use esp_hal::{
-    clock::CpuClock, gpio::{Input, InputConfig, Io, Level, Output, OutputConfig}, handler, i2c::master::{BusTimeout, Config as I2cConfig, I2c}, ledc::Ledc, ram, system::{CpuControl, Stack}, time::Rate, timer::timg::TimerGroup
+    clock::CpuClock, gpio::{Io, Level, Output, OutputConfig}, i2c::master::{BusTimeout, Config as I2cConfig, I2c}, ledc::Ledc, system::{CpuControl, Stack}, time::Rate, timer::timg::TimerGroup
 };
     
 use esp_hal_embassy::Executor;
+#[cfg(feature = "ble")]
 use bleps::{
     ad_structure::{
         AdStructure,
@@ -37,6 +35,7 @@ use bleps::{
     gatt,
 };
 
+#[cfg(feature = "wifi")]
 use esp_wifi::{
     init,
     EspWifiController,
@@ -50,13 +49,11 @@ use pcf8563::Pcf8563;
 
 use rand::{Rng, SeedableRng};
 use static_cell::StaticCell;
-use u8g2_fonts::{fonts::{u8g2_font_6x12_m_symbols, u8g2_font_6x12_t_symbols}, FontRenderer, U8g2TextStyle};
-use watchy_m5::display_buf::StickDisplayBuffer;
-use watchy_m5::widgets::{MyCharacterStyle, ScrollingMarquee, StyleableTextWindow, TextWindow};
 #[cfg(feature = "gpio_interrupt")]
 use watchy_m5::buttons::{btn_task, initialize_buttons, INPUT_BUTTONS};
-use watchy_m5::buttons::{button_dispatch, ButtonComponents};
-use watchy_m5::display::{HEIGHT, WIDTH, byte_slice_to_pixels, Backlight, DisplayBuilder, DisplayComponents, DisplayError, DrawAsync, StickDisplayT, StickDrawTarget, StickExtraFrameBuf, StickFrameBuf, StickRawFrameBuf};
+use watchy_m5::{buttons::{button_dispatch, ButtonComponents}, widgets::{ScrollingMarquee, StyleableTextWindow, TextWindow}};
+use watchy_m5::display::{byte_slice_to_pixels, DisplayBuilder, DisplayComponents, DisplayError, DrawAsync, StickDrawTarget, StickExtraFrameBuf, HEIGHT, WIDTH};
+// use watchy_m5::display::Backlight;
 use watchy_m5::buzzer::{Buzzer, BuzzerChannel, BuzzerState};
 use watchy_m5::music::Song;
 use watchy_m5::player::{player_task, PlayerCmd, Player};
@@ -68,25 +65,18 @@ use embassy_sync::
 
 use {esp_backtrace as _, esp_println as _};
 
-use core::{cell::RefCell, net::Ipv4Addr, ptr::addr_of_mut, str::{from_utf8, from_utf8_unchecked}};
+use core::{cell::RefCell, ptr::addr_of_mut, };
+#[cfg(feature = "wifi")]
+use core::{net::Ipv4Addr, str::{from_utf8, from_utf8_unchecked}};
 use embedded_graphics::{
-    geometry::AnchorX, mono_font::{ascii::{FONT_10X20, FONT_9X15}, iso_8859_1::FONT_5X7, MonoTextStyle}, pixelcolor::Rgb565, prelude::*, primitives::{Circle, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle, StrokeAlignment, StyledDrawable, Triangle}, text::{renderer::CharacterStyle, Text}
+    mono_font::MonoTextStyle, pixelcolor::Rgb565, prelude::*, primitives::{Circle, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle, StrokeAlignment, Triangle}, text::renderer::CharacterStyle
 };
 
 use embedded_text::{
     alignment::HorizontalAlignment,
-    style::{HeightMode, TextBoxStyle, TextBoxStyleBuilder},
-    TextBox,
+    style::{HeightMode, TextBoxStyleBuilder},
 };
 
-
-// #[embassy_executor::task]
-// async fn run() {
-//     loop {
-//         info!("Hello world from embassy using esp-hal-async!");
-//         Timer::after(Duration::from_millis(1_000)).await;
-//     }
-// }
 
 #[embassy_executor::task]
 async fn sound_task(mut buzzer: Buzzer<'static>) {
@@ -95,6 +85,10 @@ async fn sound_task(mut buzzer: Buzzer<'static>) {
         buzzer_state = buzzer.execute(buzzer_state).await;
     }
 }
+
+const WIFI_SSID: &str = env!("SSID");
+const WIFI_PSK: &str = env!("PSK");
+const OTA_SERVER_IP: &str = env!("OTA_IP");
 
 
 

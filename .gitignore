@@ -17,3 +17,4 @@ target/
 #.idea/
 output.map
 .env
+watchy-m5.bin
